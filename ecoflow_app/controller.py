@@ -1,0 +1,108 @@
+"""Glue object: owns client, history and rule engine; forwards signals to the UI."""
+from __future__ import annotations
+
+import time
+from collections import deque
+
+from PySide6.QtCore import QObject, Signal
+
+from .api import POLL_FAST, POLL_SLOW, EcoflowClient, Telemetry
+from .engine import RuleEngine
+from .paths import DB_PATH, SETTINGS_PATH
+from .power import state_of, state_since
+from .settings import Settings, load_rules, load_settings, save_settings
+from .storage import History
+
+STALE_AFTER = 60  # seconds without telemetry -> treated as offline
+
+
+class Controller(QObject):
+    telemetry = Signal(object)
+    online = Signal(bool)
+    status = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.history = History(DB_PATH)
+        self.settings: Settings = load_settings()
+        if self.settings.complete and not SETTINGS_PATH.exists():
+            save_settings(self.settings)  # migrate .env values so autostart works from anywhere
+        self.engine = RuleEngine(None, load_rules())
+        self.client: EcoflowClient | None = None
+        self.last: Telemetry | None = None
+        self.is_online = False
+        self.window_active = False
+        # power state (charging/discharging/full/ongrid) and when the current run started; seeded from history
+        self.power_state, self.state_since_ts = state_since(self.history.range(time.time() - 3 * 86400))
+        self.live: deque = deque(maxlen=8000)  # ~1 Hz samples, enough for the 1 hour graph
+        self.status_text = "Not configured" if not self.settings.complete else "Starting..."
+
+    @property
+    def fresh(self) -> bool:
+        return bool(self.last and self.is_online and time.time() - self.last.ts < STALE_AFTER)
+
+    def recent(self, since: float) -> list[tuple]:
+        """Rows (ts, soc, in_w, out_w) since `since`: 1 Hz live buffer, older part from the 30 s history."""
+        live = [r for r in self.live if r[0] >= since]
+        if live and live[0][0] <= since + 2:
+            return live
+        cutoff = live[0][0] if live else time.time() + 1
+        old = [(r[0], r[1], r[2], r[3]) for r in self.history.range(since, cutoff - 0.001, with_prev=True)]
+        return old + live
+
+    def start(self):
+        if not self.settings.complete:
+            return
+        self._stop_client()
+        c = EcoflowClient(self.settings.api_host, self.settings.email, self.settings.password, self.settings.sn)
+        c.telemetry.connect(self._on_telemetry)
+        c.online.connect(self._on_online)
+        c.status.connect(self._on_status)
+        self.client = c
+        self.engine.client = c
+        c.set_poll_interval(POLL_FAST if self.window_active else POLL_SLOW)
+        c.start()
+
+    def set_window_active(self, active: bool):
+        """Window open and visible -> poll every 1 s, otherwise (tray) every 10 s."""
+        self.window_active = active
+        if self.client:
+            self.client.set_poll_interval(POLL_FAST if active else POLL_SLOW)
+
+    def apply_settings(self, s: Settings):
+        save_settings(s)
+        self.settings = s
+        self.last = None
+        self.start()
+
+    def shutdown(self):
+        self._stop_client()
+
+    def _stop_client(self):
+        if self.client:
+            self.client.stop()
+            self.client = None
+            self.engine.client = None
+
+    def _on_telemetry(self, t: Telemetry):
+        prev = self.power_state
+        new = state_of(t.soc, t.in_w, t.out_w, t.grid, prev)
+        if new != prev:
+            self.power_state, self.state_since_ts = new, t.ts
+        elif self.state_since_ts is None:
+            self.state_since_ts = t.ts
+        self.last = t
+        self.is_online = True
+        self.history.add(t)
+        if not self.live or t.ts - self.live[-1][0] >= 1.0:
+            self.live.append((t.ts, t.soc, t.in_w, t.out_w))
+        self.engine.on_telemetry(t)
+        self.telemetry.emit(t)
+
+    def _on_online(self, ok: bool):
+        self.is_online = ok
+        self.online.emit(ok)
+
+    def _on_status(self, text: str):
+        self.status_text = text
+        self.status.emit(text)
