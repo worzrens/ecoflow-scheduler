@@ -103,8 +103,9 @@ python packaging/make_icns.py
 pyinstaller --noconfirm packaging/macos.spec      # -> dist/EcoFlowScheduler.app
 ```
 
-Or let GitHub build it: Actions > build > Run workflow gives `EcoFlowScheduler-macos` (Apple Silicon .app, zipped) and the
-Windows exe as artifacts (tags `v*` also trigger it).
+Or let GitHub build it: Actions > build > Run workflow gives `EcoFlowScheduler-macos` (Apple Silicon .app, zipped, built on the `macos-latest` runner) and the
+Windows exe as artifacts; it also runs on every push to `main` and on `v*` tags. If GitHub reports an unsupported runner
+configuration, the pinned image was retired - use `macos-latest`.
 
 An unsigned app is blocked by Gatekeeper on first launch: right-click > Open, or `xattr -cr EcoFlowScheduler.app`.
 For a clean install sign with a Developer ID certificate and notarize (`codesign --deep --options runtime ...`,

@@ -3,7 +3,9 @@ name: build
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
+    paths-ignore: ["**.md", ".gitignore", ".env.example"]   # docs-only pushes do not need a build
 
 jobs:
   windows:
@@ -22,7 +24,9 @@ jobs:
         with: { name: EcoFlowScheduler-windows, path: dist/EcoFlowScheduler.exe }
 
   macos:
-    runs-on: macos-14            # Apple Silicon runner -> arm64 .app
+    # 'macos-latest' = current Apple Silicon image. A pinned label such as macos-14 fails with
+    # "configuration 'macos-14-arm64-us-default' is not supported" once GitHub retires that image.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
