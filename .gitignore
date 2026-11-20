@@ -4,7 +4,10 @@ __pycache__/
 build/
 dist/
 *.spec
+!packaging/*.spec
 shots/
 probe_dump.jsonl
 .pytest_cache/
 .idea/
+assets/app.iconset/
+assets/app.icns

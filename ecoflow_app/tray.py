@@ -1,6 +1,7 @@
 """System tray icon with live tooltip."""
 from __future__ import annotations
 
+import sys
 import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer
@@ -57,7 +58,8 @@ def make_icon(soc: float | None, live: bool) -> QIcon:
     p.setPen(Qt.NoPen)
     p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), 22, 22)
     text = f"{soc:.0f}" if soc is not None else "?"
-    f = QFont("Segoe UI")
+    f = QFont()
+    f.setFamilies(["Segoe UI", "SF Pro Text", "Helvetica Neue", "Arial"])
     f.setBold(True)
     f.setPixelSize({1: 96, 2: 88, 3: 62}.get(len(text), 62))   # fill the square: "100" is the narrowest fit
     f.setStretch(QFont.Condensed if len(text) == 3 else QFont.Unstretched)
@@ -98,6 +100,14 @@ class Tray(QSystemTrayIcon):
         open_a.triggered.connect(self.show_window)
         quit_a = QAction("Quit", menu)
         quit_a.triggered.connect(self.quit)
+        self._info: list[QAction] = []
+        if sys.platform == "darwin":   # menu-bar icons have no tooltip on macOS -> show the same text at the top of the menu
+            for _ in range(4):
+                a = QAction("", menu)
+                a.setEnabled(False)
+                menu.addAction(a)
+                self._info.append(a)
+            menu.addSeparator()
         menu.addAction(open_a)
         menu.addSeparator()
         menu.addAction(quit_a)
@@ -116,7 +126,12 @@ class Tray(QSystemTrayIcon):
     def refresh(self):
         t = self.ctrl.last
         self.setIcon(make_icon(t.soc if t else None, self.ctrl.fresh))
-        self.setToolTip(tooltip_text(self.ctrl))
+        tip = tooltip_text(self.ctrl)
+        self.setToolTip(tip)
+        lines = tip.splitlines()
+        for i, a in enumerate(self._info):
+            a.setText(lines[i] if i < len(lines) else "")
+            a.setVisible(i < len(lines))
 
     def _activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):

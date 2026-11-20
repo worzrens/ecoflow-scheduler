@@ -1,12 +1,13 @@
 """Main window: Dashboard, Statistics, Control, Settings (dark, rounded cards, Android-like)."""
 from __future__ import annotations
 
+import sys
 import time
 from copy import deepcopy
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, QTime, QTimer, Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -732,6 +733,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         if self.allow_close:
             e.accept()
+        elif sys.platform == "darwin" and not e.spontaneous():
+            # Cmd+Q: Qt closes the windows programmatically (the X button is a *spontaneous* close) -> really quit
+            self.allow_close = True
+            e.accept()
+            QTimer.singleShot(0, QApplication.quit)
         else:
             e.ignore()
             self.hide()  # minimize to tray; quit via tray menu

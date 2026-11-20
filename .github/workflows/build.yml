@@ -1,0 +1,38 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt pyinstaller pytest
+      - run: python -m pytest -q tests
+        env: { QT_QPA_PLATFORM: offscreen }
+      - run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --name EcoFlowScheduler
+          --icon assets/app.ico --collect-submodules keyring.backends main.py
+      - uses: actions/upload-artifact@v4
+        with: { name: EcoFlowScheduler-windows, path: dist/EcoFlowScheduler.exe }
+
+  macos:
+    runs-on: macos-14            # Apple Silicon runner -> arm64 .app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt pyinstaller pytest
+      - run: python -m pytest -q tests
+        env: { QT_QPA_PLATFORM: offscreen }
+      - run: python packaging/make_icns.py
+      - run: pyinstaller --noconfirm packaging/macos.spec
+      # Unsigned build. For a clean first launch add a Developer ID certificate and notarize (see README).
+      - run: ditto -c -k --keepParent dist/EcoFlowScheduler.app EcoFlowScheduler-macos.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: EcoFlowScheduler-macos, path: EcoFlowScheduler-macos.zip }

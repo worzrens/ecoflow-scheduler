@@ -87,3 +87,27 @@ Per-machine data lives in `%APPDATA%\EcoFlowScheduler\` and is not carried over:
 - Statistics: hover the gap between two cards to reveal a grip, press and drag to resize them (works like a window manager).
 - Input graph: where data is missing, a drop of the input to ~0 W is drawn as an immediate drop (an outage), and the outage
   chart treats such a gap as an outage.
+
+## macOS
+
+The code is cross-platform: data lives in `~/Library/Application Support/EcoFlowScheduler`, the password in the Keychain,
+"Start at login" writes a LaunchAgent (`~/Library/LaunchAgents/com.ecoflowscheduler.app.plist`), the tray icon is a menu-bar
+icon whose menu shows the same status lines as the Windows tooltip (macOS has no menu-bar tooltips), and Cmd+Q quits
+(the window's close button still only hides it). It runs as a menu-bar app without a Dock icon (`LSUIElement`).
+
+Build (needs a Mac; PyInstaller cannot cross-compile):
+
+```
+pip install -r requirements.txt pyinstaller
+python packaging/make_icns.py
+pyinstaller --noconfirm packaging/macos.spec      # -> dist/EcoFlowScheduler.app
+```
+
+Or let GitHub build it: Actions > build > Run workflow gives `EcoFlowScheduler-macos` (Apple Silicon .app, zipped) and the
+Windows exe as artifacts (tags `v*` also trigger it).
+
+An unsigned app is blocked by Gatekeeper on first launch: right-click > Open, or `xattr -cr EcoFlowScheduler.app`.
+For a clean install sign with a Developer ID certificate and notarize (`codesign --deep --options runtime ...`,
+`xcrun notarytool submit ...`; requires an Apple Developer account).
+
+`ECOFLOW_DATA_DIR` overrides the data folder on any platform.
