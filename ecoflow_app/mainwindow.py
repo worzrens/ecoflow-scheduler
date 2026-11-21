@@ -21,6 +21,7 @@ from .controller import Controller
 from .rules import MAX_W, MIN_W, Dynamic, RulesConfig, ScheduleEntry, Temporary, short_reason
 from .settings import Settings
 from .settings import get_github_token
+from .power import input_breakdown
 from .sync import coverage, format_coverage
 from .util import fmt_duration
 from .widgets import InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
@@ -303,14 +304,25 @@ class MainWindow(QMainWindow):
         g.setContentsMargins(22, 14, 22, 14)
         g.setHorizontalSpacing(16)
         g.setVerticalSpacing(2)
-        t = QLabel(f'<span style="color:{GREEN}">&#9679;</span>  Input')
-        t.setObjectName("muted")
+        self.lbl_in_title = QLabel("")
+        self.lbl_in_title.setObjectName("muted")
         self.lbl_in = QLabel("-- W")
         self.lbl_in.setObjectName("statvalue")
-        g.addWidget(t, 0, 0)
+        g.addWidget(self.lbl_in_title, 0, 0)
         g.addWidget(self.lbl_in, 1, 0)
-        self._in_spacer = QLabel(" ")
-        g.addWidget(self._in_spacer, 2, 0)
+        sub = QHBoxLayout()
+        sub.setSpacing(8)
+        self._in_spacer = QLabel(" ")          # while charging: "Limit 300 W - rule"
+        self._in_spacer.setObjectName("muted")
+        self.lbl_in_status = QLabel("")
+        self.lbl_in_status.setObjectName("status")
+        self.info_left = InfoIcon()
+        sub.addWidget(self._in_spacer)
+        sub.addWidget(self.lbl_in_status)
+        sub.addWidget(self.info_left)
+        sub.addStretch()
+        g.addLayout(sub, 2, 0)
+        self._set_input_title("Input")
 
         line = QFrame()
         line.setObjectName("vline")
@@ -340,6 +352,17 @@ class MainWindow(QMainWindow):
         g.setRowStretch(1, 1)
         self.limit_widgets = [line, self.lbl_limit_caption, self.lbl_limit_val, self.info, self.lbl_limit_status]
         return c
+
+    def _set_input_title(self, text: str):
+        self.lbl_in_title.setText(f'<span style="color:{GREEN}">&#9679;</span>  {text}')
+
+    @staticmethod
+    def _set_chip(label: QLabel, text: str, name: str):
+        label.setText(text)
+        if label.objectName() != name:
+            label.setObjectName(name)
+            label.style().unpolish(label)
+            label.style().polish(label)
 
     def _build_output_card(self) -> QFrame:
         c = card()
@@ -379,8 +402,6 @@ class MainWindow(QMainWindow):
         w, reason = c.engine.effective
         auto_on = c.engine.rules.automation_enabled
         dev = f"{t.cfg_limit} W" if t else "--"
-        self.lbl_limit_caption.setText(f"Limit · {short_reason(reason)}")
-        self.lbl_limit_val.setText(dev)
         if c.engine.guard_tripped:
             status, name = "conflict - paused", "statuspaused"
         elif not auto_on:
@@ -389,22 +410,51 @@ class MainWindow(QMainWindow):
             status, name = f"applying {w} W", "status"
         else:
             status, name = "on target", "statusok"
-        self.lbl_limit_status.setText(status)
-        if self.lbl_limit_status.objectName() != name:
-            self.lbl_limit_status.setObjectName(name)
-            self.lbl_limit_status.style().unpolish(self.lbl_limit_status)
-            self.lbl_limit_status.style().polish(self.lbl_limit_status)
-        self.info.setToolTip(self._rules_tooltip(dev, w, reason, auto_on))
-        show_limit = bool(t and t.in_w >= 1) and not self.compact   # no input -> the limit is irrelevant
+        tip = self._rules_tooltip(dev, w, reason, auto_on)
+        self.info.setToolTip(tip)
+        self.info_left.setToolTip(tip)
+
+        # Input card has three presentations:
+        #  limit    - input on the left, charge limit + its status on the right (default)
+        #  full     - same, but the limit is greyed out and its status says it is not in use
+        #  charging - charging power on the left (limit and status below it), usage on the right, total input small
+        has_input = bool(t and t.in_w >= 1) and not self.compact
+        state = c.power_state if (t and fresh) else None
+        mode = "none"
+        if has_input:
+            mode = "charging" if (state == "charging" and t.in_w - t.out_w > 3) else ("full" if state == "full" else "limit")
+        self._set_input_title("Charging" if mode == "charging" else "Input")
+        self.lbl_limit_val.setStyleSheet("color: #5b6270;" if mode == "full" else "")
+        self._in_spacer.setText(" ")
+        self.lbl_in_status.setVisible(mode == "charging")
+        self.info_left.setVisible(mode == "charging")
+        if mode == "charging":
+            charge, usage, total = input_breakdown(t.in_w, t.out_w)
+            self.lbl_in.setText(f"{charge:.0f} W")
+            self._in_spacer.setText(f"Limit {dev} · {short_reason(reason)}")
+            self._set_chip(self.lbl_in_status, status, name)
+            self.lbl_limit_caption.setText("Usage")
+            self.lbl_limit_val.setText(f"{usage:.0f} W")
+            self._set_chip(self.lbl_limit_status, f"Total input {total:.0f} W", "muted")
+        else:
+            if t:
+                self.lbl_in.setText(f"{t.in_w:.0f} W")
+            self.lbl_limit_caption.setText(f"Limit · {short_reason(reason)}")
+            self.lbl_limit_val.setText(dev)
+            if mode == "full":
+                self._set_chip(self.lbl_limit_status, "not in use - battery full", "status")
+                self._in_spacer.setText("Battery full - powering the load")
+            else:
+                self._set_chip(self.lbl_limit_status, status, name)
         for wdg in self.limit_widgets:
-            wdg.setVisible(show_limit)
+            wdg.setVisible(has_input)
+        self.info.setVisible(has_input and mode != "charging")
         self._refresh_power_state()
         if t:
             self.battery.set_soc(t.soc, fresh, c.power_state if fresh else "idle")
             self.lbl_remain.setText(fmt_duration(t.chg_min) + " to full" if (t.charging and fresh)
                                     else fmt_duration(t.dsg_min))
             self.lbl_temp.setText(f"{t.temp:.0f} C")
-            self.lbl_in.setText(f"{t.in_w:.0f} W")
             self.lbl_out.setText(f"{t.out_w:.0f} W")
             self.lbl_acout.setText(f"AC output {t.ac_out_w:.0f} W")
         else:
@@ -692,9 +742,17 @@ class MainWindow(QMainWindow):
         c = card()
         cl = QVBoxLayout(c)
         cl.setContentsMargins(20, 18, 20, 18)
+        s = self.ctrl.settings
+        self._acct_editing = False
+        self._ever_connected = False
+        self._acct_key = None
+        # form: shown until connected, after a failed sign-in, or when editing
+        self.box_acct_form = QWidget()
+        fl = QVBoxLayout(self.box_acct_form)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(10)
         form = QFormLayout()
         form.setVerticalSpacing(12)
-        s = self.ctrl.settings
         self.ed_email = QLineEdit(s.email)
         self.ed_pass = QLineEdit(s.password)
         self.ed_pass.setEchoMode(QLineEdit.Password)
@@ -704,17 +762,50 @@ class MainWindow(QMainWindow):
         self.cmb_host.addItems(["api-e.ecoflow.com", "api.ecoflow.com"])
         self.cmb_host.setCurrentText(s.api_host)
         form.addRow("EcoFlow account e-mail", self.ed_email)
-        form.addRow("Password (kept in Windows Credential Manager)", self.ed_pass)
+        form.addRow("Password (kept in the system credential store)", self.ed_pass)
         form.addRow("Device serial number", self.ed_sn)
         form.addRow("API host (EU / global)", self.cmb_host)
-        cl.addLayout(form)
+        fl.addLayout(form)
+        arow = FlowLayout(hspacing=10, vspacing=8)
+        self.btn_acct = SaveButton("Save && reconnect")
+        self.btn_acct.clicked.connect(self._save_settings)
+        self.b_acct_cancel = QPushButton("Cancel")
+        self.b_acct_cancel.setObjectName("ghost")
+        self.b_acct_cancel.clicked.connect(self._cancel_edit_account)
+        arow.addWidget(self.btn_acct)
+        arow.addWidget(self.b_acct_cancel)
+        fl.addLayout(arow)
+        # summary: the credentials are out of the way once the connection works
+        self.box_acct_done = QWidget()
+        dl = FlowLayout(self.box_acct_done, hspacing=10, vspacing=8)
+        dl.setContentsMargins(0, 0, 0, 0)
+        self.lbl_acct = QLabel("")
+        self.lbl_acct.setObjectName("chipon")
+        b_edit = QPushButton("Edit credentials")
+        b_edit.setObjectName("ghost")
+        b_edit.clicked.connect(self._edit_account)
+        dl.addWidget(self.lbl_acct)
+        dl.addWidget(b_edit)
+        title = QLabel("EcoFlow account")
+        title.setObjectName("cardtitle")
+        cl.addWidget(title)
+        cl.addWidget(self.box_acct_form)
+        cl.addWidget(self.box_acct_done)
+        self.lbl_acct_status = QLabel("")
+        self.lbl_acct_status.setObjectName("muted")
+        self.lbl_acct_status.setWordWrap(True)
+        cl.addWidget(self.lbl_acct_status)
         self.cb_autostart = QCheckBox("Start with Windows (minimized to tray)")
         self.cb_autostart.setChecked(autostart.is_enabled())
+        self.cb_autostart.toggled.connect(self._on_autostart)      # applies at once, no save needed
         cl.addWidget(self.cb_autostart)
-        btn = QPushButton("Save && reconnect")
-        btn.setObjectName("primary")
-        btn.clicked.connect(self._save_settings)
-        cl.addWidget(btn)
+        for sig in (self.ed_email.textChanged, self.ed_pass.textChanged, self.ed_sn.textChanged,
+                    self.cmb_host.currentTextChanged):
+            sig.connect(self._update_acct_dirty)
+        self.ctrl.status.connect(self._on_account_status)
+        self.ctrl.online.connect(self._on_account_status)
+        self._update_acct_dirty()
+        self._on_account_status()
         lay.addWidget(c)
 
         # ---- share power history between devices (read-only): shared folder or private GitHub repository
@@ -762,6 +853,12 @@ class MainWindow(QMainWindow):
         gl = QVBoxLayout(self.box_github)
         gl.setContentsMargins(0, 0, 0, 0)
         gl.setSpacing(8)
+        self._gh_editing = False
+        # connection form: shown until connected, after an error, or when editing
+        self.box_gh_form = QWidget()
+        fgl = QVBoxLayout(self.box_gh_form)
+        fgl.setContentsMargins(0, 0, 0, 0)
+        fgl.setSpacing(8)
         help_ = QLabel("1) On GitHub create a PRIVATE repository (tick \"Add a README\").  2) Settings > Developer settings > "
                        "Fine-grained tokens: repository access = only that repository, permission Contents = Read and write.  "
                        "3) Enter owner/name and the token here, on every device. The token is kept in the Windows Credential "
@@ -776,13 +873,29 @@ class MainWindow(QMainWindow):
         self.ed_token.setEchoMode(QLineEdit.Password)
         self.ed_token.setPlaceholderText("token saved - leave empty to keep" if get_github_token() else "fine-grained token")
         self.ed_token.setMinimumWidth(270)
-        b_conn = QPushButton("Connect")
-        b_conn.setObjectName("primary")
-        b_conn.clicked.connect(self._connect_github)
-        for x in (self.ed_repo, self.ed_token, b_conn):
+        self.b_conn = QPushButton("Connect")
+        self.b_conn.setObjectName("primary")
+        self.b_conn.clicked.connect(self._connect_github)
+        self.b_gh_cancel = QPushButton("Cancel")
+        self.b_gh_cancel.setObjectName("ghost")
+        self.b_gh_cancel.clicked.connect(self._cancel_edit_github)
+        for x in (self.ed_repo, self.ed_token, self.b_conn, self.b_gh_cancel):
             grow.addWidget(x)
-        gl.addWidget(help_)
-        gl.addLayout(grow)
+        fgl.addWidget(help_)
+        fgl.addLayout(grow)
+        # connected summary: the form is out of the way once the connection works
+        self.box_gh_done = QWidget()
+        dl = FlowLayout(self.box_gh_done, hspacing=10, vspacing=8)
+        dl.setContentsMargins(0, 0, 0, 0)
+        self.lbl_gh_repo = QLabel("")
+        self.lbl_gh_repo.setObjectName("chipon")
+        b_edit = QPushButton("Edit connection")
+        b_edit.setObjectName("ghost")
+        b_edit.clicked.connect(self._edit_github)
+        dl.addWidget(self.lbl_gh_repo)
+        dl.addWidget(b_edit)
+        gl.addWidget(self.box_gh_form)
+        gl.addWidget(self.box_gh_done)
         v.addWidget(self.box_github)
 
         self.box_actions = QWidget()
@@ -808,6 +921,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.lbl_cov)
         lay.addWidget(c2)
         self.ctrl.sync_status.connect(self._on_sync_status)
+        self.ctrl.sync_progress.connect(self._on_sync_progress)
         mode0 = self.ctrl.settings.sync_mode
         self._show_sync_mode(mode0)
         self.lbl_sync.setText("Not synced yet" if mode0 else "Sync is off")
@@ -819,6 +933,33 @@ class MainWindow(QMainWindow):
         self.box_folder.setVisible(mode == "folder")
         self.box_github.setVisible(mode == "github")
         self.box_actions.setVisible(bool(mode) and self.ctrl.settings.sync_mode == mode)
+        if mode == "github":
+            self._refresh_github_panel()
+
+    def _refresh_github_panel(self):
+        """Form while not connected / after an error / when editing; otherwise just the repository chip."""
+        st = self.ctrl.settings
+        configured = st.sync_mode == "github" and bool(st.github_repo) and bool(get_github_token())
+        res = self.ctrl.sync_result
+        failed = bool(res and res.error)
+        show_form = self._gh_editing or not configured or failed
+        self.box_gh_form.setVisible(show_form)
+        self.box_gh_done.setVisible(not show_form)
+        self.b_gh_cancel.setVisible(configured and show_form)
+        self.lbl_gh_repo.setText(f"Repository  {st.github_repo}")
+
+    def _edit_github(self):
+        self._gh_editing = True
+        self._refresh_github_panel()
+
+    def _cancel_edit_github(self):
+        self._gh_editing = False
+        self.ed_token.clear()
+        self.ed_repo.setText(self.ctrl.settings.github_repo)
+        self._refresh_github_panel()
+
+    def _on_sync_progress(self, text: str):
+        self.lbl_sync.setText(text)
 
     def _on_sync_mode(self, mode: str):
         if mode == "":
@@ -846,11 +987,14 @@ class MainWindow(QMainWindow):
             return
         self.ed_token.clear()
         self.ed_token.setPlaceholderText("token saved - leave empty to keep")
-        self.lbl_sync.setText("Connecting...")
+        self._gh_editing = False
+        self.b_conn.setEnabled(False)               # one attempt at a time; re-enabled when the round ends
+        self.lbl_sync.setText("Connecting to GitHub...")
         self._show_sync_mode("github")
 
     def _on_sync_status(self, text: str):
         self.lbl_sync.setText(text)
+        self.b_conn.setEnabled(True)
         mode = self.ctrl.settings.sync_mode
         if not mode:
             self.lbl_cov.setText("")
@@ -862,19 +1006,92 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - the report is a nicety
             self.lbl_cov.setText("")
 
-    def _save_settings(self):
-        s = Settings(email=self.ed_email.text().strip(), sn=self.ed_sn.text().strip(),
-                     api_host=self.cmb_host.currentText().strip(), password=self.ed_pass.text(),
-                     sync_dir=self.ctrl.settings.sync_dir, machine_id=self.ctrl.settings.machine_id,
-                     sync_mode=self.ctrl.settings.sync_mode, github_repo=self.ctrl.settings.github_repo)
+    # ---- EcoFlow account panel
+    def _form_settings(self) -> Settings:
+        cur = self.ctrl.settings
+        return Settings(email=self.ed_email.text().strip(), sn=self.ed_sn.text().strip(),
+                        api_host=self.cmb_host.currentText().strip(), password=self.ed_pass.text(),
+                        sync_dir=cur.sync_dir, machine_id=cur.machine_id, sync_mode=cur.sync_mode,
+                        github_repo=cur.github_repo)
+
+    def _update_acct_dirty(self, *_):
+        """Save & reconnect is enabled only while the form differs from what is saved."""
+        btn = getattr(self, "btn_acct", None)
+        if btn is None:
+            return
+        f, cur = self._form_settings(), self.ctrl.settings
+        btn.setEnabled((f.email, f.sn, f.api_host, f.password) != (cur.email, cur.sn, cur.api_host, cur.password))
+        btn.update()
+
+    def _status_is_error(self) -> bool:
+        t = self.ctrl.status_text
+        return t.startswith("Offline") or "failed" in t.lower() or "refused" in t.lower()
+
+    def _acct_status_text(self) -> str:
+        t = self.ctrl.status_text
+        if not self.ctrl.settings.complete:
+            return "Enter your EcoFlow account, password and the device serial number."
+        if t.startswith("Starting"):
+            return "Connecting..."
+        if t.startswith("Signing in"):
+            return "Signing in to EcoFlow..."
+        return t
+
+    def _on_account_status(self, *_):
+        c = self.ctrl
+        if c.status_text == "Connected" or c.fresh:
+            self._ever_connected = True
+        key = (c.status_text, bool(c.fresh), self._acct_editing, c.settings.complete)
+        if key == self._acct_key:
+            return
+        self._acct_key = key
+        self._refresh_account_panel()
+
+    def _refresh_account_panel(self):
+        st = self.ctrl.settings
+        show_form = self._acct_editing or not st.complete or (not self._ever_connected and self._status_is_error())
+        self.box_acct_form.setVisible(show_form)
+        self.box_acct_done.setVisible(not show_form)
+        self.b_acct_cancel.setVisible(st.complete and show_form)
+        self.lbl_acct.setText(f"Account  {st.email}  \u00b7  {st.sn}  \u00b7  {st.api_host}")
+        self.lbl_acct_status.setText(self._acct_status_text())
+
+    def _edit_account(self):
+        self._acct_editing = True
+        self._acct_key = None
+        self._on_account_status()
+
+    def _cancel_edit_account(self):
+        st = self.ctrl.settings
+        self.ed_email.setText(st.email)
+        self.ed_pass.setText(st.password)
+        self.ed_sn.setText(st.sn)
+        self.cmb_host.setCurrentText(st.api_host)
+        self._acct_editing = False
+        self._acct_key = None
+        self._on_account_status()
+
+    def _on_autostart(self, on: bool):
         try:
-            autostart.set_enabled(self.cb_autostart.isChecked())
+            autostart.set_enabled(on)
         except OSError as e:
             QMessageBox.warning(self, "Autostart", f"Could not change autostart: {e}")
-        if s.complete:
-            self.ctrl.apply_settings(s)
-        else:
+            self.cb_autostart.blockSignals(True)
+            self.cb_autostart.setChecked(not on)
+            self.cb_autostart.blockSignals(False)
+
+    def _save_settings(self):
+        s = self._form_settings()
+        if not s.complete:
             QMessageBox.information(self, "Settings", "E-mail, password and serial number are required.")
+            return
+        self._acct_editing = False
+        self._ever_connected = False          # a new sign-in has to prove itself
+        self._acct_key = None
+        self.ctrl.status_text = "Signing in..."
+        self.ctrl.apply_settings(s)
+        self._update_acct_dirty()
+        self._on_account_status()
 
     # -------------------------------------------------- visibility -> poll rate
     def _update_active(self):

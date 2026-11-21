@@ -338,13 +338,19 @@ class SyncResult:
         return f"Last sync {when} · sent {self.exported} · received {self.imported} · {peers}"
 
 
-def sync_once(history: History, store, sn: str | None = None, machine_id: str | None = None) -> SyncResult:
-    """One round: check the store, share our new samples, read the others'. `store` is a Transport or a folder path."""
+def sync_once(history: History, store, sn: str | None = None, machine_id: str | None = None,
+              progress=None) -> SyncResult:
+    """One round: check the store, share our new samples, read the others'. `store` is a Transport or a folder path.
+    `progress(text)` is called with the phase: connecting -> sending -> reading the other devices."""
     tr = store if isinstance(store, Transport) else FolderTransport(store, sn, machine_id)
+    say = progress or (lambda _t: None)
     res = SyncResult(at=time.time())
     try:
+        say("Connecting to GitHub..." if tr.kind == "github" else "Opening the shared folder...")
         tr.check()
+        say("Connected - sending your samples...")
         res.exported = export_new(history, tr)
+        say("Syncing - reading the other devices...")
         got = import_peers(history, tr)
         res.imported = sum(n for _, n in got.values())
         res.peers = [label for label, _ in got.values()]

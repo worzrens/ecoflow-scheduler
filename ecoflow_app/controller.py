@@ -24,7 +24,8 @@ class Controller(QObject):
     online = Signal(bool)
     status = Signal(str)
     sync_done = Signal(object)      # SyncResult, emitted from the sync worker thread
-    sync_status = Signal(str)       # text for the Settings tab
+    sync_status = Signal(str)       # final text of a sync round (Settings tab)
+    sync_progress = Signal(str)     # phase text while a round is running: connecting / sending / reading
 
     def __init__(self):
         super().__init__()
@@ -92,7 +93,7 @@ class Controller(QObject):
 
     def _sync_worker(self, tr):
         try:
-            res = sync.sync_once(self.history, tr)
+            res = sync.sync_once(self.history, tr, progress=self.sync_progress.emit)
         except Exception as e:  # noqa: BLE001 - never let the worker die silently
             res = sync.SyncResult(at=time.time(), error=str(e))
         self.sync_done.emit(res)

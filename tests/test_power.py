@@ -118,3 +118,10 @@ def test_merge_same_kind_combines_real_and_estimated():
     out = merge_same_kind([Segment(0, 100, "outage"), Segment(100, 200, "outage", est_spans=[(100, 200)]),
                            Segment(200, 300, "grid")])
     assert [s.kind for s in out] == ["outage", "grid"] and outage_count(out) == 1 and out[0].est_seconds == 100
+
+
+def test_input_breakdown_matches_the_ecoflow_example():
+    from ecoflow_app.power import input_breakdown
+    assert input_breakdown(815, 515) == (300, 515, 815)       # 815 W total = 515 W usage + 300 W charging
+    assert input_breakdown(307, 310) == (0, 307, 307)         # full battery, pass-through: nothing charging
+    assert input_breakdown(0, 250) == (0, 0, 0)               # no input

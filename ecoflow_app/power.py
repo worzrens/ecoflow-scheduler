@@ -22,6 +22,12 @@ def state_of(soc: float, in_w: float, out_w: float, grid: bool, prev: str | None
     return "ongrid"
 
 
+def input_breakdown(in_w: float, out_w: float) -> tuple[float, float, float]:
+    """Split the input power while on grid: (charging, usage, total). E.g. 815 W in, 515 W load -> 300 W charging + 515 W usage."""
+    usage = min(max(out_w, 0.0), max(in_w, 0.0))
+    return max(0.0, in_w - usage), usage, max(in_w, 0.0)
+
+
 def row_grid(row: tuple) -> bool:
     """grid flag of a history row (ts, soc, in, out, ac_in, ac_out, limit, temp, grid)."""
     g = row[8] if len(row) > 8 else None

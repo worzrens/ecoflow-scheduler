@@ -192,3 +192,17 @@ def test_token_goes_to_the_credential_store_never_to_settings_json(tmp_path, mon
     assert sync.make_transport(s).repo == REPO
     settings_mod.set_github_token("")
     assert settings_mod.get_github_token() == "" and sync.make_transport(s) is None
+
+
+def test_progress_phases_are_reported_in_order(tmp_path):
+    a = History(tmp_path / "a.db")
+    fill(a, time.time() - 600, time.time())
+    seen = []
+    sync.sync_once(a, transport(FakeGitHub(), "A"), progress=seen.append)
+    assert seen == ["Connecting to GitHub...", "Connected - sending your samples...", "Syncing - reading the other devices..."]
+    seen.clear()
+    sync.sync_once(a, str(tmp_path / "shared"), SN, "A", progress=seen.append)
+    assert seen[0] == "Opening the shared folder..." and len(seen) == 3
+    seen.clear()                                            # a rejected repo stops after the first phase
+    sync.sync_once(a, transport(FakeGitHub(private=False), "A"), progress=seen.append)
+    assert seen == ["Connecting to GitHub..."]
