@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 from collections import deque
 from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import sync
+from . import schedule, sync
 from .api import POLL_FAST, POLL_SLOW, EcoflowClient, Telemetry
 from .engine import RuleEngine
 from .paths import DB_PATH, SETTINGS_PATH
@@ -25,6 +26,8 @@ class Controller(QObject):
     status = Signal(str)
     sync_done = Signal(object)      # SyncResult, emitted from the sync worker thread
     sync_status = Signal(str)       # final text of a sync round (Settings tab)
+    schedule_done = Signal(object)  # ScheduleResult from the fetch thread
+    schedule_status = Signal(str)   # text for the Settings tab; also tells the graphs to refresh
     sync_progress = Signal(str)     # phase text while a round is running: connecting / sending / reading
 
     def __init__(self):
@@ -50,6 +53,14 @@ class Controller(QObject):
         self._sync_timer.timeout.connect(self.sync_now)
         self._apply_sync_timer()
         QTimer.singleShot(8000, self.sync_now)
+        # planned outages from the distribution company's public page, saved daily for expected-vs-real graphs
+        self.schedule_result: schedule.ScheduleResult | None = None
+        self._schedule_busy = False
+        self.schedule_done.connect(self._on_schedule_done)
+        self._schedule_timer = QTimer(self)
+        self._schedule_timer.timeout.connect(self.fetch_schedule)
+        self._schedule_timer.start(schedule.FETCH_EVERY * 1000)
+        QTimer.singleShot(20000, self.fetch_schedule)
 
     @property
     def fresh(self) -> bool:
@@ -82,6 +93,68 @@ class Controller(QObject):
         self.window_active = active
         if self.client:
             self.client.set_poll_interval(POLL_FAST if active else POLL_SLOW)
+
+    # ---- planned-outage schedule
+    @property
+    def schedule_configured(self) -> bool:
+        st = self.settings
+        return st.outage_region in schedule.REGIONS and st.outage_group in schedule.GROUPS
+
+    def fetch_schedule(self):
+        if not self.schedule_configured or self._schedule_busy:
+            return
+        self._schedule_busy = True
+        threading.Thread(target=self._schedule_worker, args=(self.settings.outage_region,), daemon=True,
+                         name="ecoflow-schedule").start()
+
+    def _schedule_worker(self, region: str):
+        res = schedule.ScheduleResult(at=time.time())
+        try:
+            data = schedule.fetch(region)
+            self.history.schedule_put(region, data.days, data.update)
+            res.update, res.days = data.update, len(data.days)
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            res.has_today = any(today <= d < today + 86400 for d in data.days)
+            res.has_tomorrow = any(today + 86400 <= d < today + 2 * 86400 for d in data.days)
+        except (OSError, ValueError) as e:      # requests' errors are OSErrors too
+            res.error = str(e)
+        self.schedule_done.emit(res)
+
+    def _on_schedule_done(self, res):
+        self._schedule_busy = False
+        self.schedule_result = res
+        self.schedule_status.emit(res.text())
+
+    def set_outage_schedule(self, region: str, group: str):
+        self.settings = replace(self.settings, outage_region=region, outage_group=group)
+        save_settings(self.settings)
+        if self.schedule_configured:
+            self.fetch_schedule()
+        else:
+            self.schedule_result = None
+            self.schedule_status.emit("Schedule is off")
+
+    def schedule_note(self, day_start: float, today_start: float) -> tuple[str, str]:
+        """Why a day has no schedule: (short title, explanation). Tells 'never fetched / fetch failed' from
+        'the company has not published it (yet)' and 'it was published while the app was not running'."""
+        r = self.schedule_result
+        saved = self.history.schedule_count(self.settings.outage_region) if self.settings.outage_region else 0
+        if r is not None and r.error and saved == 0:
+            return "Fetch failed", r.error
+        if r is None and saved == 0:
+            return "Not fetched yet", "The schedule has not been downloaded yet (it is checked every 10 minutes)."
+        if day_start > today_start:
+            if r is not None and r.error:
+                return "Fetch failed", f"Could not check for tomorrow's schedule: {r.error}"
+            return "Not published yet", "The distribution company has not published this day yet; it is picked up automatically."
+        return "Not saved", "No schedule was saved for this day - the app was not running while it was published."
+
+    def expected_segments(self, t0: float, t1: float):
+        """Planned outages over [t0, t1] for the chosen region/group, or None when not configured."""
+        if not self.schedule_configured:
+            return None
+        st = self.settings
+        return schedule.build_segments(self.history.schedule_days(st.outage_region, st.outage_group, t0, t1), t0, t1)
 
     # ---- history sharing
     def sync_now(self):

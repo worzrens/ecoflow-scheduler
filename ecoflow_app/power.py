@@ -54,6 +54,8 @@ class Segment:
     out_kwh: float = 0.0
     in_kwh: float = 0.0
     est_spans: list = field(default_factory=list)   # [(start, end)] parts estimated from neighbouring data
+    note: str = ""      # display title override, e.g. why there is no data (expected-outage chart)
+    detail: str = ""    # longer explanation for the hover bubble
 
     @property
     def guessed(self) -> bool:

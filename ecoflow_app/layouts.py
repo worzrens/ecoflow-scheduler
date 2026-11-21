@@ -200,12 +200,16 @@ class GripSplitter(QSplitter):
 
 
 class SplitPage(QScrollArea):
-    """Three cards in resizable splitters: 2 + 1 layout when wide, stacked when narrow; footer label below."""
+    """Cards in resizable splitters. Wide: rows of two side by side; narrow: one column. Footer label below.
+
+    `cards` maps a key to a widget; `wide_rows` lists the keys per row for the wide layout, `narrow` the order for the
+    narrow one."""
     WIDE = 1180
 
-    def __init__(self, cards, footer):
+    def __init__(self, cards: dict[str, QWidget], footer, wide_rows: list[list[str]], narrow: list[str]):
         super().__init__()
-        self.cards = list(cards)
+        self.cards = dict(cards)
+        self.wide_rows, self.narrow = wide_rows, narrow
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.NoFrame)
         root = QWidget()
@@ -215,6 +219,7 @@ class SplitPage(QScrollArea):
         self._v.addWidget(footer)
         self.setWidget(root)
         self._outer = None
+        self._tops: list[GripSplitter] = []
         self._mode = None
         self.viewport().installEventFilter(self)
         self._build("wide")
@@ -223,43 +228,45 @@ class SplitPage(QScrollArea):
         if mode == self._mode:
             return
         self._mode = mode
-        for c in self.cards:
+        for c in self.cards.values():
             c.setParent(None)
         old = self._outer
         outer = GripSplitter(Qt.Vertical)
-        c0, c1, c2 = self.cards
+        self._tops = []
         if mode == "wide":
-            top = GripSplitter(Qt.Horizontal)
-            top.addWidget(c0)
-            top.addWidget(c1)
-            top.setStretchFactor(0, 1)
-            top.setStretchFactor(1, 1)
-            outer.addWidget(top)
-            outer.addWidget(c2)
-            outer.setStretchFactor(0, 3)
-            outer.setStretchFactor(1, 2)
-            ratios = [0.6, 0.4]
-            self._top = top
+            for row in self.wide_rows:
+                if len(row) == 1:
+                    outer.addWidget(self.cards[row[0]])
+                    continue
+                top = GripSplitter(Qt.Horizontal)
+                for key in row:
+                    top.addWidget(self.cards[key])
+                    top.setStretchFactor(top.count() - 1, 1)
+                outer.addWidget(top)
+                self._tops.append(top)
+            n = len(self.wide_rows)
         else:
-            for c in self.cards:
-                outer.addWidget(c)
-            ratios = [0.34, 0.4, 0.26]
-            self._top = None
+            for key in self.narrow:
+                outer.addWidget(self.cards[key])
+            n = len(self.narrow)
+        for i in range(n):
+            outer.setStretchFactor(i, 1)
         self._v.insertWidget(0, outer, 1)
         self._outer = outer
         if old is not None:
             old.setParent(None)
             old.deleteLater()
-        for c in self.cards:
+        for c in self.cards.values():
             c.show()
-        QTimer.singleShot(0, lambda: self._default_sizes(ratios))
+        QTimer.singleShot(0, lambda: self._default_sizes(n))
 
-    def _default_sizes(self, ratios):
-        h = max(self.viewport().height(), 400)
-        self._outer.setSizes([int(h * r) for r in ratios])
-        if self._top is not None:
-            w = max(self.viewport().width(), 400)
-            self._top.setSizes([w // 2, w // 2])
+    def _default_sizes(self, n: int):
+        h = max(self.viewport().height(), 500)
+        # tall cards (calendar views) need room: give every row at least its minimum, the splitter adds the rest
+        self._outer.setSizes([int(h * 0.9 / max(n, 1))] * n)
+        w = max(self.viewport().width(), 400)
+        for top in self._tops:
+            top.setSizes([w // top.count()] * top.count())
 
     def eventFilter(self, obj, ev):
         if obj is self.viewport() and ev.type() == QEvent.Resize:

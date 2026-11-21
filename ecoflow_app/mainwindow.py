@@ -16,12 +16,13 @@ from .analytics import AnalyticsCard
 from .api import Telemetry
 from .charts import GREEN, ORANGE, BatteryBar
 from .layouts import FlowLayout, ReflowScroll, SplitPage
-from .outages import OutageCard
+from .outages import ExpectedOutageCard, OutageCard
 from .controller import Controller
 from .rules import MAX_W, MIN_W, Dynamic, RulesConfig, ScheduleEntry, Temporary, short_reason
 from .settings import Settings
 from .settings import get_github_token
 from .power import input_breakdown
+from .schedule import GROUPS, REGIONS
 from .sync import coverage, format_coverage
 from .util import fmt_duration
 from .widgets import InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
@@ -523,7 +524,11 @@ class MainWindow(QMainWindow):
         self.stats_summary = QLabel()
         self.stats_summary.setObjectName("muted")
         self.stats_summary.setWordWrap(True)
-        sc = SplitPage((self.stats_power, self.stats_outage, self.stats_soc), self.stats_summary)
+        self.stats_expected = ExpectedOutageCard(self.ctrl)
+        sc = SplitPage({"power": self.stats_power, "real": self.stats_outage, "expected": self.stats_expected,
+                        "soc": self.stats_soc}, self.stats_summary,
+                       wide_rows=[["real", "expected"], ["power", "soc"]],
+                       narrow=["power", "real", "expected", "soc"])
         self.stats_page = sc
         self.tabs.addTab(sc, "Statistics")
         self.tabs.currentChanged.connect(lambda *_: (self._refresh_stats(), self._refresh_dash_card()))
@@ -533,6 +538,7 @@ class MainWindow(QMainWindow):
             return
         self.stats_power.refresh()
         self.stats_outage.refresh()
+        self.stats_expected.refresh()
         self.stats_soc.refresh()
         rows7 = self.ctrl.history.range(time.time() - 7 * 86400)
         if rows7:
@@ -920,6 +926,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.lbl_sync)
         v.addWidget(self.lbl_cov)
         lay.addWidget(c2)
+        lay.addWidget(self._build_schedule_card())
         self.ctrl.sync_status.connect(self._on_sync_status)
         self.ctrl.sync_progress.connect(self._on_sync_progress)
         mode0 = self.ctrl.settings.sync_mode
@@ -927,6 +934,59 @@ class MainWindow(QMainWindow):
         self.lbl_sync.setText("Not synced yet" if mode0 else "Sync is off")
         lay.addStretch()
         self.tabs.addTab(w, "Settings")
+
+    def _build_schedule_card(self) -> QFrame:
+        """Region and queue (group) for the planned-outage schedule that feeds the 'expected outages' graphs."""
+        c = card()
+        v = QVBoxLayout(c)
+        v.setContentsMargins(20, 16, 20, 18)
+        v.setSpacing(10)
+        t = QLabel("Outage schedule")
+        t.setObjectName("cardtitle")
+        d = QLabel("Planned outages for your queue (group), from the distribution company's public page (no login). It is "
+                   "checked every 10 minutes because schedules get revised; the site only shows today and tomorrow, so the "
+                   "app keeps every day it sees to compare with the real outages later. Other regions are not available "
+                   "yet (their sites block automated requests).")
+        d.setObjectName("muted")
+        d.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(d)
+        row = FlowLayout(hspacing=10, vspacing=8)
+        st = self.ctrl.settings
+        self.cmb_region = QComboBox()
+        self.cmb_region.addItem("Off", "")
+        for key, (name, _url) in REGIONS.items():
+            self.cmb_region.addItem(name, key)
+        self.cmb_region.setCurrentIndex(max(0, self.cmb_region.findData(st.outage_region)))
+        self.cmb_group = QComboBox()
+        self.cmb_group.addItem("Group...", "")
+        for g in GROUPS:
+            self.cmb_group.addItem(f"Group {g}", g)
+        self.cmb_group.setCurrentIndex(max(0, self.cmb_group.findData(st.outage_group)))
+        b_upd = QPushButton("Update now")
+        b_upd.setObjectName("ghost")
+        b_upd.clicked.connect(self.ctrl.fetch_schedule)
+        for x in (self.cmb_region, self.cmb_group, b_upd):
+            row.addWidget(x)
+        v.addLayout(row)
+        self.lbl_sched = QLabel("Choose a region and a group." if not self.ctrl.schedule_configured else "Not updated yet")
+        self.lbl_sched.setObjectName("muted")
+        self.lbl_sched.setWordWrap(True)
+        v.addWidget(self.lbl_sched)
+        self.cmb_region.currentIndexChanged.connect(self._on_schedule_choice)
+        self.cmb_group.currentIndexChanged.connect(self._on_schedule_choice)
+        self.ctrl.schedule_status.connect(self._on_schedule_status)
+        return c
+
+    def _on_schedule_choice(self, *_):
+        region, group = self.cmb_region.currentData() or "", self.cmb_group.currentData() or ""
+        self.lbl_sched.setText("Updating..." if region and group else "Choose a region and a group.")
+        self.ctrl.set_outage_schedule(region, group)
+        self._refresh_stats()
+
+    def _on_schedule_status(self, text: str):
+        self.lbl_sched.setText(text)
+        self._refresh_stats()
 
     def _show_sync_mode(self, mode: str):
         self.seg_sync.get(mode, self.seg_sync[""]).setChecked(True)

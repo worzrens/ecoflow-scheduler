@@ -27,6 +27,8 @@ class History:
         if "src" not in cols:  # sync: which install recorded the row (NULL = this one)
             self._db.execute("ALTER TABLE samples ADD COLUMN src TEXT")
         self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS schedule (region TEXT, day INTEGER, grp TEXT, hours TEXT, "
+                         "updated TEXT, PRIMARY KEY (region, day, grp))")
         if "grid" not in cols:  # added with the power-outage feature: 1 mains present, 0 absent, NULL unknown (old rows)
             self._db.execute("ALTER TABLE samples ADD COLUMN grid INTEGER")
         # drop samples built from partial state by an earlier version (limit is never 0 on a real reading)
@@ -54,6 +56,28 @@ class History:
             self._db.commit()
         self._last_ts = ts
         return True
+
+    # ---- planned outages published by the distribution company (see schedule.py); the site never serves past days,
+    # so every day it shows is kept here to compare with the real outages later
+    def schedule_put(self, region: str, days: dict, updated: str) -> int:
+        rows = [(region, int(day), grp, hours, updated) for day, groups in days.items() for grp, hours in groups.items()]
+        with self._lock:
+            self._db.executemany("INSERT OR REPLACE INTO schedule (region, day, grp, hours, updated) VALUES (?,?,?,?,?)", rows)
+            self._db.execute("DELETE FROM schedule WHERE day < ?", (int(time.time()) - 60 * 86400,))
+            self._db.commit()
+        return len(rows)
+
+    def schedule_count(self, region: str) -> int:
+        """How many day/group rows were ever saved for the region (0 = the schedule was never fetched)."""
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM schedule WHERE region = ?", (region,)).fetchone()[0]
+
+    def schedule_days(self, region: str, grp: str, t0: float, t1: float) -> dict[int, str]:
+        """{day (unix midnight): 24 state letters} for the days overlapping [t0, t1]."""
+        with self._lock:
+            rows = self._db.execute("SELECT day, hours FROM schedule WHERE region = ? AND grp = ? AND day > ? AND day < ?",
+                                    (region, grp, int(t0) - 86400, int(t1))).fetchall()
+        return {d: h for d, h in rows}
 
     # ---- sync helpers (see sync.py)
     def meta_get(self, key: str, default: str | None = None) -> str | None:

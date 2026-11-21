@@ -28,6 +28,8 @@ class Settings:
     sync_dir: str = ""      # shared folder (OneDrive, Dropbox, Syncthing, NAS...) for sharing power history
     github_repo: str = ""   # owner/name of the PRIVATE repository (the token lives in the OS credential store)
     machine_id: str = ""    # identifies this install in the shared folder
+    outage_region: str = ""  # planned-outage schedule source (see schedule.py), "" = off
+    outage_group: str = ""   # queue / group number, e.g. "4.1"
 
     @property
     def complete(self) -> bool:
@@ -42,6 +44,7 @@ def load_settings() -> Settings:
         s.email, s.sn, s.api_host = d.get("email", ""), d.get("sn", ""), d.get("api_host", s.api_host)
         s.sync_dir, s.machine_id = d.get("sync_dir", ""), d.get("machine_id", "")
         s.sync_mode, s.github_repo = d.get("sync_mode", ""), d.get("github_repo", "")
+        s.outage_region, s.outage_group = d.get("outage_region", ""), d.get("outage_group", "")
         if not s.sync_mode and s.sync_dir:      # settings written before GitHub sync existed
             s.sync_mode = "folder"
         from_file = True

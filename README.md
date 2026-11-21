@@ -33,6 +33,10 @@ Polling: full-state request every 3 s while the window is open and visible, ever
 
 ## Build exe
 
+One step on Windows: `tools\rebuild.cmd` (or `powershell -File tools\rebuild.ps1`) runs the tests, force-closes the running app,
+rebuilds `dist\EcoFlowScheduler.exe` and launches it. Options: `-NoTests`, `-NoLaunch`, `-Minimized`, `-DryRun`. A failing test
+stops it before the app is touched. Manual command:
+
 ```
 pip install -r requirements-dev.txt
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name EcoFlowScheduler --icon assets/app.ico --collect-submodules keyring.backends main.py
@@ -147,3 +151,17 @@ Coverage report of the merged history: `python -m ecoflow_app.sync --days 7 [--s
 While the PC is asleep the app is frozen: no data is recorded and no rules are applied (the unit keeps its last limit). On
 wake it reconnects by itself (new login after about a minute without data), applies the rules for the current time and
 resumes recording. The gap is filled from the other device's history when syncing is on, otherwise shown as no data.
+
+## Expected outages (schedule)
+
+Statistics > "Expected outages" shows the planned outages of your queue next to the real ones ("Time without electricity"). Set the
+region and queue (group) in Settings > Outage schedule.
+
+- **Source:** the distribution company's public schedule page (verified for DTEK Odesa, `dtek-oem.com.ua/ua/shutdowns`; no login
+  or key). The other DTEK regional sites answer automated requests with a bot-protection page, so only Odesa is available for now.
+- **Update:** every 10 minutes (about 160 KB per download), because schedules get revised during the day. The site only serves
+  today and tomorrow, so the app saves every day it sees (latest published version wins) - that is what makes past days comparable.
+- **Graphs:** same layouts as the real graph (calendar for 1-3 days, day columns for 7). Planned outages are drawn as **orange
+  dashed outlines without fill**, possible outages dotted, days without a saved schedule grey. The real graph has a
+  **Compare with schedule** checkbox that overlays the planned outages on the real ones (hover shows both).
+- Half-hour accuracy: the schedule has hourly states plus "first/second 30 minutes". Day keys are Kyiv midnights.
