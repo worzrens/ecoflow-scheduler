@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, QTime, QTimer, Qt
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -20,8 +20,10 @@ from .outages import OutageCard
 from .controller import Controller
 from .rules import MAX_W, MIN_W, Dynamic, RulesConfig, ScheduleEntry, Temporary, short_reason
 from .settings import Settings
+from .settings import get_github_token
+from .sync import coverage, format_coverage
 from .util import fmt_duration
-from .widgets import InfoIcon, ScheduleRow, Stepper, Switch, watts_stepper
+from .widgets import InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
 
 DASH_RANGES = {"5 min": 300, "30 min": 1800, "1 hour": 3600, "6 hours": 6 * 3600, "24 hours": 86400,
                "7 days": 7 * 86400}
@@ -602,27 +604,42 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         note = QLabel("Priority: Temporary rule > Schedule > Dynamic > Default")
         note.setObjectName("muted")
-        save = QPushButton("Save && apply")
-        save.setObjectName("primary")
-        save.setMinimumWidth(180)
-        save.clicked.connect(self._save_rules)
+        self.btn_save = SaveButton("Save && apply")
+        self.btn_save.clicked.connect(self._save_rules)
         bottom.addWidget(note, 1)
-        bottom.addWidget(save)
+        bottom.addWidget(self.btn_save)
         pl.addLayout(bottom)
+        # the button is only enabled while the form differs from the saved rules
+        for sig in (self.cb_auto.toggled, self.cb_dyn.toggled, self.sp_default.valueChanged, self.sp_dyn_w1.valueChanged,
+                    self.sp_dyn_thr.valueChanged, self.sp_dyn_w2.valueChanged):
+            sig.connect(self._update_dirty)
+        self._update_dirty()
         self.tabs.addTab(page, "Control")
 
     def _add_row(self, e: ScheduleEntry):
         row = ScheduleRow(e)
         row.removed.connect(self._remove_row)
+        row.changed.connect(self._update_dirty)
         self.sched_rows.append(row)
         self.rows_box.addWidget(row)
         self.lbl_empty.setVisible(False)
+        self._update_dirty()
 
     def _remove_row(self, row: ScheduleRow):
         self.sched_rows.remove(row)
         self.rows_box.removeWidget(row)
         row.deleteLater()
         self.lbl_empty.setVisible(not self.sched_rows)
+        self._update_dirty()
+
+    def _update_dirty(self, *_):
+        """Enable Save & apply only when the form differs from the rules that are saved/active."""
+        btn = getattr(self, "btn_save", None)
+        if btn is None:
+            return
+        dirty = self._collect_rules().to_dict() != self.ctrl.engine.rules.to_dict()
+        btn.setEnabled(dirty)
+        btn.update()
 
     def _collect_rules(self) -> RulesConfig:
         cur = self.ctrl.engine.rules
@@ -637,6 +654,8 @@ class MainWindow(QMainWindow):
     def _save_rules(self):
         self.ctrl.engine.set_rules(self._collect_rules())
         self._refresh_dashboard()
+        self.btn_save.play_success()      # check-mark animation instead of the label
+        self._update_dirty()              # clean now -> button greys out
 
     def _start_temp(self):
         mins = self.sp_tmp_d.value() * (60 if self.cmb_tmp_u.currentText() == "hours" else 1)
@@ -644,12 +663,14 @@ class MainWindow(QMainWindow):
         r.temporary = Temporary(self.sp_tmp_w.value(), time.time() + mins * 60)
         self.ctrl.engine.set_rules(r)
         self._refresh_dashboard()
+        self._update_dirty()
 
     def _cancel_temp(self):
         r = self._collect_rules()
         r.temporary = None
         self.ctrl.engine.set_rules(r)
         self._refresh_dashboard()
+        self._update_dirty()
 
     def _refresh_temp_label(self):
         t = self.ctrl.engine.rules.temporary
@@ -695,12 +716,157 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(self._save_settings)
         cl.addWidget(btn)
         lay.addWidget(c)
+
+        # ---- share power history between devices (read-only): shared folder or private GitHub repository
+        c2 = card()
+        v = QVBoxLayout(c2)
+        v.setContentsMargins(20, 16, 20, 18)
+        v.setSpacing(10)
+        t = QLabel("Sync between devices")
+        t.setObjectName("cardtitle")
+        d = QLabel("Share the recorded power history with your other install(s), read-only: each device writes only its own "
+                   "files and reads the others', so gaps in one history are filled from the other and nothing can conflict. "
+                   "Only power numbers are shared. Use the same store on every device.")
+        d.setObjectName("muted")
+        d.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(d)
+        modes = FlowLayout(hspacing=8, vspacing=8)
+        grp = QButtonGroup(self)
+        grp.setExclusive(True)
+        self.seg_sync: dict[str, QPushButton] = {}
+        for key, label in (("", "Off"), ("folder", "Shared folder"), ("github", "GitHub (private repo)")):
+            b_ = QPushButton(label)
+            b_.setObjectName("segment")
+            b_.setCheckable(True)
+            grp.addButton(b_)
+            b_.clicked.connect(lambda _=False, k=key: self._on_sync_mode(k))
+            modes.addWidget(b_)
+            self.seg_sync[key] = b_
+        v.addLayout(modes)
+
+        self.box_folder = QWidget()
+        fl = FlowLayout(self.box_folder, hspacing=10, vspacing=8)
+        fl.setContentsMargins(0, 0, 0, 0)
+        self.ed_sync = QLineEdit(self.ctrl.settings.sync_dir)
+        self.ed_sync.setReadOnly(True)
+        self.ed_sync.setPlaceholderText("OneDrive / Dropbox / Syncthing / network folder")
+        self.ed_sync.setMinimumWidth(320)
+        b_pick = QPushButton("Choose folder...")
+        b_pick.clicked.connect(self._choose_sync_dir)
+        fl.addWidget(self.ed_sync)
+        fl.addWidget(b_pick)
+        v.addWidget(self.box_folder)
+
+        self.box_github = QWidget()
+        gl = QVBoxLayout(self.box_github)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(8)
+        help_ = QLabel("1) On GitHub create a PRIVATE repository (tick \"Add a README\").  2) Settings > Developer settings > "
+                       "Fine-grained tokens: repository access = only that repository, permission Contents = Read and write.  "
+                       "3) Enter owner/name and the token here, on every device. The token is kept in the Windows Credential "
+                       "Manager / macOS Keychain, never in a file. A public repository is refused.")
+        help_.setObjectName("muted")
+        help_.setWordWrap(True)
+        grow = FlowLayout(hspacing=10, vspacing=8)
+        self.ed_repo = QLineEdit(self.ctrl.settings.github_repo)
+        self.ed_repo.setPlaceholderText("owner/private-repo")
+        self.ed_repo.setMinimumWidth(230)
+        self.ed_token = QLineEdit()
+        self.ed_token.setEchoMode(QLineEdit.Password)
+        self.ed_token.setPlaceholderText("token saved - leave empty to keep" if get_github_token() else "fine-grained token")
+        self.ed_token.setMinimumWidth(270)
+        b_conn = QPushButton("Connect")
+        b_conn.setObjectName("primary")
+        b_conn.clicked.connect(self._connect_github)
+        for x in (self.ed_repo, self.ed_token, b_conn):
+            grow.addWidget(x)
+        gl.addWidget(help_)
+        gl.addLayout(grow)
+        v.addWidget(self.box_github)
+
+        self.box_actions = QWidget()
+        al = FlowLayout(self.box_actions, hspacing=10, vspacing=8)
+        al.setContentsMargins(0, 0, 0, 0)
+        b_now = QPushButton("Sync now")
+        b_now.setObjectName("ghost")
+        b_now.clicked.connect(self.ctrl.sync_now)
+        b_off = QPushButton("Stop syncing")
+        b_off.setObjectName("ghost")
+        b_off.clicked.connect(lambda: self._on_sync_mode(""))
+        al.addWidget(b_now)
+        al.addWidget(b_off)
+        v.addWidget(self.box_actions)
+
+        self.lbl_sync = QLabel("")
+        self.lbl_sync.setObjectName("muted")
+        self.lbl_sync.setWordWrap(True)
+        self.lbl_cov = QLabel("")
+        self.lbl_cov.setObjectName("muted")
+        self.lbl_cov.setWordWrap(True)
+        v.addWidget(self.lbl_sync)
+        v.addWidget(self.lbl_cov)
+        lay.addWidget(c2)
+        self.ctrl.sync_status.connect(self._on_sync_status)
+        mode0 = self.ctrl.settings.sync_mode
+        self._show_sync_mode(mode0)
+        self.lbl_sync.setText("Not synced yet" if mode0 else "Sync is off")
         lay.addStretch()
         self.tabs.addTab(w, "Settings")
 
+    def _show_sync_mode(self, mode: str):
+        self.seg_sync.get(mode, self.seg_sync[""]).setChecked(True)
+        self.box_folder.setVisible(mode == "folder")
+        self.box_github.setVisible(mode == "github")
+        self.box_actions.setVisible(bool(mode) and self.ctrl.settings.sync_mode == mode)
+
+    def _on_sync_mode(self, mode: str):
+        if mode == "":
+            self.ctrl.stop_sync()
+        self._show_sync_mode(mode)
+
+    def _choose_sync_dir(self):
+        start = self.ctrl.settings.sync_dir or str(__import__("pathlib").Path.home())
+        path = QFileDialog.getExistingDirectory(self, "Choose the shared folder", start)
+        if path:
+            self.ed_sync.setText(path)
+            self.lbl_sync.setText("Syncing...")
+            self.ctrl.set_sync_folder(path)
+            self._show_sync_mode("folder")
+
+    def _connect_github(self):
+        repo, token = self.ed_repo.text().strip(), self.ed_token.text().strip()
+        if not repo or (not token and not get_github_token()):
+            QMessageBox.information(self, "GitHub sync", "Enter the repository (owner/name) and a token.")
+            return
+        try:
+            self.ctrl.set_sync_github(repo, token)
+        except OSError as e:
+            self.lbl_sync.setText(f"Could not save the token: {e}")
+            return
+        self.ed_token.clear()
+        self.ed_token.setPlaceholderText("token saved - leave empty to keep")
+        self.lbl_sync.setText("Connecting...")
+        self._show_sync_mode("github")
+
+    def _on_sync_status(self, text: str):
+        self.lbl_sync.setText(text)
+        mode = self.ctrl.settings.sync_mode
+        if not mode:
+            self.lbl_cov.setText("")
+            self._show_sync_mode("")
+            return
+        self._show_sync_mode(mode)
+        try:
+            self.lbl_cov.setText(format_coverage(coverage(self.ctrl.history, 7)))
+        except Exception:  # noqa: BLE001 - the report is a nicety
+            self.lbl_cov.setText("")
+
     def _save_settings(self):
         s = Settings(email=self.ed_email.text().strip(), sn=self.ed_sn.text().strip(),
-                     api_host=self.cmb_host.currentText().strip(), password=self.ed_pass.text())
+                     api_host=self.cmb_host.currentText().strip(), password=self.ed_pass.text(),
+                     sync_dir=self.ctrl.settings.sync_dir, machine_id=self.ctrl.settings.machine_id,
+                     sync_mode=self.ctrl.settings.sync_mode, github_repo=self.ctrl.settings.github_repo)
         try:
             autostart.set_enabled(self.cb_autostart.isChecked())
         except OSError as e:

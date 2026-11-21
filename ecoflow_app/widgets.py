@@ -1,8 +1,10 @@
 """Small reusable controls for the Control tab: switch, stepper, day chips, schedule row, info icon."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, QTime, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+import math
+
+from PySide6.QtCore import QPointF, QRectF, QSize, QTime, QTimer, QVariantAnimation, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSpinBox,
                                QTimeEdit, QWidget)
 
@@ -91,6 +93,7 @@ class InfoIcon(QLabel):
 class ScheduleRow(QFrame):
     """Switch + times | day chips | power + remove; groups wrap onto new lines in narrow windows."""
     removed = Signal(object)
+    changed = Signal()
 
     def __init__(self, e: ScheduleEntry):
         super().__init__()
@@ -139,7 +142,82 @@ class ScheduleRow(QFrame):
         rm.clicked.connect(lambda: self.removed.emit(self))
         flow.addWidget(group(self.watts, rm))
 
+        for sig in (self.on.toggled, self.t_from.timeChanged, self.t_to.timeChanged, self.watts.valueChanged,
+                    *[b.toggled for b in self.days]):
+            sig.connect(lambda *_: self.changed.emit())
+
     def entry(self) -> ScheduleEntry:
         return ScheduleEntry(start=self.t_from.time().toString("HH:mm"), end=self.t_to.time().toString("HH:mm"),
                              watts=self.watts.value(), days=[i for i, b in enumerate(self.days) if b.isChecked()],
                              enabled=self.on.isChecked())
+
+
+class SaveButton(QPushButton):
+    """Green primary chip. Greyed out while there is nothing to save; after a click it shows an animated check mark."""
+
+    def __init__(self, text: str):
+        super().__init__()
+        self._label = text.replace("&&", "&")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumSize(180, 40)
+        self._showing = False
+        self._progress = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(420)
+        self._anim.valueChanged.connect(self._on_progress)
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.timeout.connect(self._finish)
+
+    def is_playing(self) -> bool:
+        return self._showing
+
+    def play_success(self):
+        """Replace the label with a drawn check mark for about a second."""
+        self._showing = True
+        self._progress = 0.0
+        self._anim.stop()
+        self._anim.start()
+        self._hold.start(1300)
+        self.update()
+
+    def _on_progress(self, v):
+        self._progress = float(v)
+        self.update()
+
+    def _finish(self):
+        self._showing = False
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        active = self.isEnabled() or self._showing
+        bg = QColor(GREEN if active else "#20242b")
+        if active and self.underMouse() and not self._showing:
+            bg = bg.lighter(112)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        r = QRectF(self.rect())
+        p.drawRoundedRect(r, 8, 8)
+        if self._showing:
+            pts = [QPointF(-10, 0), QPointF(-3.5, 7), QPointF(10, -7)]
+            seg = [math.dist((a.x(), a.y()), (b.x(), b.y())) for a, b in zip(pts, pts[1:])]
+            left = self._progress * sum(seg)
+            c = r.center()
+            pen = QPen(QColor("#06130c"), 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            p.setPen(pen)
+            for (a, b), ln in zip(zip(pts, pts[1:]), seg):
+                if left <= 0:
+                    break
+                f = min(1.0, left / ln)
+                p.drawLine(c + a, c + QPointF(a.x() + (b.x() - a.x()) * f, a.y() + (b.y() - a.y()) * f))
+                left -= ln
+            return
+        f = QFont(self.font())
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#06130c" if active else "#5b6270"))
+        p.drawText(r, Qt.AlignCenter, self._label)

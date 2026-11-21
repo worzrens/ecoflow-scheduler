@@ -9,8 +9,10 @@ from datetime import datetime, timedelta
 KEEP_SECONDS = 8 * 86400
 MIN_INTERVAL = 30  # seconds between stored samples
 
-# Row layout returned by range(): (ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid)
+# Row layout returned by range(): (ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid, src)
+# src is NULL for samples recorded by this install, otherwise the id of the other device that shared them.
 GRID_IDX = 8
+SRC_IDX = 9
 
 
 class History:
@@ -22,12 +24,15 @@ class History:
             "out_w REAL, ac_in REAL, ac_out REAL, limit_w INTEGER, temp REAL)"
         )
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(samples)")}
+        if "src" not in cols:  # sync: which install recorded the row (NULL = this one)
+            self._db.execute("ALTER TABLE samples ADD COLUMN src TEXT")
+        self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         if "grid" not in cols:  # added with the power-outage feature: 1 mains present, 0 absent, NULL unknown (old rows)
             self._db.execute("ALTER TABLE samples ADD COLUMN grid INTEGER")
         # drop samples built from partial state by an earlier version (limit is never 0 on a real reading)
         self._db.execute("DELETE FROM samples WHERE limit_w IS NULL OR limit_w = 0")
         self._db.commit()
-        self._last_ts = self._scalar("SELECT MAX(ts) FROM samples") or 0
+        self._last_ts = self._scalar("SELECT MAX(ts) FROM samples WHERE src IS NULL") or 0
         self.prune()
 
     def _scalar(self, sql, *a):
@@ -50,6 +55,45 @@ class History:
         self._last_ts = ts
         return True
 
+    # ---- sync helpers (see sync.py)
+    def meta_get(self, key: str, default: str | None = None) -> str | None:
+        with self._lock:
+            r = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else default
+
+    def meta_set(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+            self._db.commit()
+
+    def local_since(self, ts: float) -> list[tuple]:
+        """Samples recorded by THIS install after `ts` (what gets shared; imported rows are never re-shared)."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid FROM samples "
+                "WHERE src IS NULL AND ts > ? ORDER BY ts", (int(ts),)).fetchall()
+
+    def local_between(self, t0: float, t1: float) -> list[tuple]:
+        """All samples recorded by THIS install in [t0, t1) - the content of one shared chunk file."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid FROM samples "
+                "WHERE src IS NULL AND ts >= ? AND ts < ? ORDER BY ts", (int(t0), int(t1))).fetchall()
+
+    def add_peer_rows(self, rows: list[tuple], src: str) -> int:
+        """Store rows shared by another install; existing timestamps and rows older than the retention are skipped."""
+        cutoff = int(time.time()) - KEEP_SECONDS
+        data = [(int(r[0]), *r[1:9], src) for r in rows if int(r[0]) >= cutoff]
+        if not data:
+            return 0
+        with self._lock:
+            before = self._db.total_changes
+            self._db.executemany(
+                "INSERT OR IGNORE INTO samples (ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid, src) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", data)
+            self._db.commit()
+            return self._db.total_changes - before
+
     def prune(self):
         with self._lock:
             self._db.execute("DELETE FROM samples WHERE ts < ?", (int(time.time()) - KEEP_SECONDS,))
@@ -58,7 +102,7 @@ class History:
     def range(self, since: float, until: float | None = None, with_prev: bool = False) -> list[tuple]:
         """Rows in [since, until]. with_prev also returns the newest row BEFORE `since`, so a graph can draw the
         line (or gap bridge) from the left edge instead of starting at the first row inside the range."""
-        cols = "ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid"
+        cols = "ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid, src"
         with self._lock:
             rows = self._db.execute(
                 f"SELECT {cols} FROM samples WHERE ts >= ? AND ts <= ? ORDER BY ts",
