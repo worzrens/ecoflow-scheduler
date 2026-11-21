@@ -115,15 +115,30 @@ For a clean install sign with a Developer ID certificate and notarize (`codesign
 
 ## Syncing history between devices
 
-Settings > Sync between devices: pick the same shared folder (OneDrive, Dropbox, Syncthing, a NAS share ...) on every install.
-Every 5 minutes (and on close) each install
-
-- appends its own new samples to `<folder>/ecoflow-history/<serial>/<machine id>/<day>.jsonl` (only it writes there), and
-- reads the other installs' files into its local history, tagged with their id (imported rows are never shared again).
-
-Both installs listen to the same unit, so there is nothing to conflict: where one has a gap the other fills it, and where
+Settings > Sync between devices shares the recorded power history with your other install(s). It is read-only and
+automatic: both installs listen to the same unit, so nothing can conflict. Where one has a gap the other fills it, and where
 neither recorded anything the graphs show "no data" (dashed / grey, then estimated by the outage logic). Only power numbers
-are shared - never credentials or settings.
+are shared - never credentials or settings. Pick the **same store on every device**:
+
+| | Shared folder | Private GitHub repository |
+|---|---|---|
+| Store | any folder synced by OneDrive, Dropbox, Syncthing, a NAS share ... | a private repo, through GitHub's REST Contents API (HTTPS + token, git is not needed) |
+| Files | `<folder>/ecoflow-history/<serial>/<machine id>/<UTC day>.jsonl` | `ecoflow-history/<serial>/<machine id>/<UTC hour>.jsonl` in the repo |
+| Interval | every 5 minutes and on close | every 30 minutes (one commit per sync while there is new data) and on close |
+
+How it works: each install writes **only its own** files (replaced atomically) and reads the other installs' files into its
+local history, tagged with their id (imported rows are never shared again). Files older than about 9 days are removed.
+
+**GitHub setup**
+
+1. On GitHub create a private repository (tick "Add a README") - not the public code repository.
+2. Settings > Developer settings > Fine-grained tokens: repository access = only that repository, permission
+   *Contents = Read and write*.
+3. In the app choose GitHub, enter `owner/name` and the token on every device and press Connect.
+
+The token is kept in the Windows Credential Manager / macOS Keychain, never in `settings.json` or the repository; stopping
+sync deletes it. Public repositories and tokens without write access are refused at every sync. Authenticated GitHub calls
+allow 5,000 requests per hour; a sync uses a handful.
 
 Coverage report of the merged history: `python -m ecoflow_app.sync --days 7 [--sync]`.
 
@@ -132,18 +147,3 @@ Coverage report of the merged history: `python -m ecoflow_app.sync --days 7 [--s
 While the PC is asleep the app is frozen: no data is recorded and no rules are applied (the unit keeps its last limit). On
 wake it reconnects by itself (new login after about a minute without data), applies the rules for the current time and
 resumes recording. The gap is filled from the other device's history when syncing is on, otherwise shown as no data.
-
-### Sync through a private GitHub repository
-
-Settings > Sync between devices > GitHub (private repo). Instead of a shared folder, the same read-only exchange runs through
-a **private** repository using GitHub's REST Contents API (HTTPS + token, git is not needed):
-
-1. On GitHub create a private repository (tick "Add a README") - not the public code repository.
-2. Settings > Developer settings > Fine-grained tokens: repository access = only that repository, permission
-   *Contents = Read and write*.
-3. In the app enter `owner/name` and the token on every device and press Connect.
-
-Each device commits only its own hour files (`ecoflow-history/<serial>/<machine id>/<UTC hour>.jsonl`, roughly one commit
-every 30 minutes while there is new data) and reads the others'. The token is kept in the Windows Credential Manager / macOS
-Keychain, never in `settings.json` or the repository; stopping sync deletes it. Public repositories and tokens without write
-access are refused at every sync. Authenticated GitHub calls allow 5,000 requests per hour; this uses a handful per sync.
