@@ -58,6 +58,7 @@ class Segment:
     detail: str = ""    # longer explanation for the hover bubble
     soc_start: float | None = None   # battery level at the start / end of the segment (None = unknown)
     soc_end: float | None = None
+    gap_from: float | None = None    # level the previous block ended at when this block really started higher (unrecorded recharge)
 
     @property
     def guessed(self) -> bool:
@@ -73,6 +74,13 @@ class Segment:
             return f"{tilde}{a}%" if short else f"Battery {tilde}{a}% (steady)"
         arrow = "→"
         return f"{tilde}{a}{arrow}{b}%" if short else f"Battery {tilde}{a}% {arrow} {b}%"
+
+    def start_estimated(self) -> bool:
+        """True when the first moment of the block is not backed by a real sample."""
+        return any(a <= self.start + 1 for a, _ in self.est_spans)
+
+    def end_estimated(self) -> bool:
+        return any(b >= self.end - 1 for _, b in self.est_spans)
 
     @property
     def est_seconds(self) -> float:
@@ -192,13 +200,19 @@ def fill_gaps(segs: list[Segment], trailing_max: float = 7200) -> list[Segment]:
 
 
 def link_battery(segs: list[Segment]) -> list[Segment]:
-    """Make the battery level continuous: a block starts at the level where the previous touching block ended
-    (a recharge that happened while the app was not recording is shown inside the block that follows)."""
+    """Chain battery levels across touching blocks WITHOUT overriding measured values.
+    Real samples always win. A block start is taken from the previous block only when that start is itself an
+    estimate (a filled gap). When a block really starts higher than the previous one ended, the app was not
+    recording while mains recharged the unit: the real value stays and the old level goes to `gap_from`."""
     for prev, cur in zip(segs, segs[1:]):
-        if prev.kind != "nodata" and cur.kind != "nodata" and abs(cur.start - prev.end) <= 1 and prev.soc_end is not None:
+        if prev.kind == "nodata" or cur.kind == "nodata" or abs(cur.start - prev.end) > 1 or prev.soc_end is None:
+            continue
+        if cur.soc_start is None or cur.start_estimated():
             cur.soc_start = prev.soc_end
-            if cur.kind == "outage" and cur.soc_end is not None:
-                cur.soc_end = min(cur.soc_end, cur.soc_start)       # no mains: the battery cannot rise
+        elif cur.soc_start - prev.soc_end >= 2:
+            cur.gap_from = prev.soc_end
+        if cur.kind == "outage" and cur.end_estimated() and cur.soc_end is not None and cur.soc_start is not None:
+            cur.soc_end = min(cur.soc_end, cur.soc_start)       # no mains: an estimated end cannot be above the start
     return segs
 
 
@@ -213,7 +227,8 @@ def slice_segments(segs: list[Segment], t0: float, t1: float) -> list[Segment]:
         spans = [(max(x, t0), min(y, t1)) for x, y in s.est_spans if min(y, t1) > max(x, t0)]
         out.append(Segment(a, b, s.kind, s.out_kwh * f, s.in_kwh * f, spans,
                            soc_start=_lerp(s.start, s.end, s.soc_start, s.soc_end, a),
-                           soc_end=_lerp(s.start, s.end, s.soc_start, s.soc_end, b)))
+                           soc_end=_lerp(s.start, s.end, s.soc_start, s.soc_end, b),
+                           gap_from=s.gap_from if a <= s.start else None))
     return out
 
 
@@ -230,5 +245,5 @@ def merge_same_kind(segs: list[Segment]) -> list[Segment]:
             last.soc_end = s.soc_end if s.soc_end is not None else last.soc_end
         else:
             out.append(Segment(s.start, s.end, s.kind, s.out_kwh, s.in_kwh, list(s.est_spans),
-                               soc_start=s.soc_start, soc_end=s.soc_end))
+                               soc_start=s.soc_start, soc_end=s.soc_end, gap_from=s.gap_from))
     return out

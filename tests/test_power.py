@@ -152,12 +152,27 @@ def test_outage_battery_never_rises_across_an_estimated_gap():
     assert o.kind == "outage" and round(o.soc_start) == 73 and round(o.soc_end) == 36, (o.soc_start, o.soc_end)
 
 
-def test_battery_is_continuous_between_blocks():
+def test_measured_battery_is_never_overwritten_by_the_previous_block():
     from ecoflow_app.power import fill_gaps, link_battery, merge_same_kind
     rows = [row(t, False, soc=73 - t / 40) for t in range(0, 1200, 30)]                 # outage 73 -> ~43
     rows += [row(t, True, soc=81 + (t - 8400) / 100) for t in range(8400, 9000, 30)]     # app was off in between
     segs = link_battery(merge_same_kind(fill_gaps(grid_segments(rows, 0, 9000, now=9030))))
     o, g = segs
     assert (o.kind, g.kind) == ("outage", "grid")
-    assert round(o.soc_end) == round(g.soc_start) and round(o.soc_end) <= 44 and round(g.soc_end) >= 86, (o.soc_end, g.soc_start, g.soc_end)
-    assert round(o.soc_start) == 73
+    assert round(o.soc_start) == 73 and round(o.soc_end) <= 44
+    assert round(g.soc_start) == 81 and round(g.soc_end) >= 86          # real start kept, not 43
+    assert round(g.gap_from) == round(o.soc_end)                        # the unrecorded recharge is flagged
+
+
+def test_green_100_then_estimated_outage_then_green_100():
+    from ecoflow_app.power import fill_gaps, link_battery, merge_same_kind
+    # mains at 100%, app off, real outage samples down to 28%, app off again (mains back, recharged), mains at 100%
+    rows = [row(t, True, soc=100) for t in range(0, 600, 30)]
+    rows += [row(t, False, soc=90 - (t - 4000) / 30) for t in range(4000, 5800, 30)]
+    rows += [row(t, True, soc=100) for t in range(20000, 20600, 30)]
+    segs = link_battery(merge_same_kind(fill_gaps(grid_segments(rows, 0, 20600, now=20630))))
+    g1, o, g2 = segs
+    assert (g1.kind, o.kind, g2.kind) == ("grid", "outage", "grid")
+    assert round(g1.soc_end) == 100 and round(g2.soc_start) == 100 and round(g2.soc_end) == 100
+    assert g2.battery(True) == "100%"                                    # shown as steady 100%, never "28->100"
+    assert o.soc_end <= o.soc_start and o.guessed

@@ -304,6 +304,8 @@ class OutageTimeline(QWidget):
                 lines.append((f"Power used: {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}", MUTED))
                 if s.battery():
                     lines.append((s.battery(), MUTED))
+                if s.gap_from is not None:
+                    lines.append((f"Was {round(s.gap_from)}% before; recharged while not recorded", MUTED))
             else:
                 lines.append(("Nothing was recorded (app off or unit offline)", MUTED))
         elif s.detail:
