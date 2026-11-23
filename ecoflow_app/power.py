@@ -56,10 +56,23 @@ class Segment:
     est_spans: list = field(default_factory=list)   # [(start, end)] parts estimated from neighbouring data
     note: str = ""      # display title override, e.g. why there is no data (expected-outage chart)
     detail: str = ""    # longer explanation for the hover bubble
+    soc_start: float | None = None   # battery level at the start / end of the segment (None = unknown)
+    soc_end: float | None = None
 
     @property
     def guessed(self) -> bool:
         return bool(self.est_spans)
+
+    def battery(self, short: bool = False) -> str:
+        """'Battery 17% -> 23%' (or 'Battery 54% (steady)'), '' when unknown."""
+        if self.soc_start is None or self.soc_end is None:
+            return ""
+        a, b = round(self.soc_start), round(self.soc_end)
+        tilde = "~" if self.guessed else ""
+        if a == b:
+            return f"{tilde}{a}%" if short else f"Battery {tilde}{a}% (steady)"
+        arrow = "→"
+        return f"{tilde}{a}{arrow}{b}%" if short else f"Battery {tilde}{a}% {arrow} {b}%"
 
     @property
     def est_seconds(self) -> float:
@@ -68,6 +81,15 @@ class Segment:
     @property
     def seconds(self) -> float:
         return self.end - self.start
+
+
+def _lerp(t0: float, t1: float, v0, v1, t):
+    """Value at time t on the line (t0, v0)-(t1, v1); None when a value is missing."""
+    if v0 is None or v1 is None:
+        return None
+    if t1 <= t0:
+        return float(v0)
+    return float(v0) + (float(v1) - float(v0)) * (t - t0) / (t1 - t0)
 
 
 def grid_segments(rows: list[tuple], t0: float, t1: float, now: float | None = None) -> list[Segment]:
@@ -90,7 +112,10 @@ def grid_segments(rows: list[tuple], t0: float, t1: float, now: float | None = N
         if b <= a:
             continue
         dt = b - a
-        raw.append(Segment(a, b, kind, (r[3] or 0) * dt / 3.6e6, (r[2] or 0) * dt / 3.6e6))
+        soc0 = r[1]
+        soc1 = rows[i + 1][1] if (nxt is not None and seg_end == nxt) else soc0
+        raw.append(Segment(a, b, kind, (r[3] or 0) * dt / 3.6e6, (r[2] or 0) * dt / 3.6e6,
+                           soc_start=_lerp(r[0], seg_end, soc0, soc1, a), soc_end=_lerp(r[0], seg_end, soc0, soc1, b)))
     out: list[Segment] = []
     cursor = t0
     for s in raw:
@@ -101,6 +126,7 @@ def grid_segments(rows: list[tuple], t0: float, t1: float, now: float | None = N
             last.end = s.end
             last.out_kwh += s.out_kwh
             last.in_kwh += s.in_kwh
+            last.soc_end = s.soc_end if s.soc_end is not None else last.soc_end
         else:
             out.append(s)
         cursor = max(cursor, s.end)
@@ -156,8 +182,24 @@ def fill_gaps(segs: list[Segment], trailing_max: float = 7200) -> list[Segment]:
             continue
         for a, b, src in parts:
             ow, iw = _avg_watts(src)
-            out.append(Segment(a, b, src.kind, ow * (b - a) / 3.6e6, iw * (b - a) / 3.6e6, [(a, b)]))
+            s0 = prev.soc_end if prev else None
+            s1 = nxt.soc_start if nxt else s0
+            if src.kind == "outage" and s0 is not None and s1 is not None:
+                s1 = min(s0, s1)      # no mains: the battery can only go down (the next part may already be recharged)
+            out.append(Segment(a, b, src.kind, ow * (b - a) / 3.6e6, iw * (b - a) / 3.6e6, [(a, b)],
+                               soc_start=s0, soc_end=s1))
     return out
+
+
+def link_battery(segs: list[Segment]) -> list[Segment]:
+    """Make the battery level continuous: a block starts at the level where the previous touching block ended
+    (a recharge that happened while the app was not recording is shown inside the block that follows)."""
+    for prev, cur in zip(segs, segs[1:]):
+        if prev.kind != "nodata" and cur.kind != "nodata" and abs(cur.start - prev.end) <= 1 and prev.soc_end is not None:
+            cur.soc_start = prev.soc_end
+            if cur.kind == "outage" and cur.soc_end is not None:
+                cur.soc_end = min(cur.soc_end, cur.soc_start)       # no mains: the battery cannot rise
+    return segs
 
 
 def slice_segments(segs: list[Segment], t0: float, t1: float) -> list[Segment]:
@@ -169,7 +211,9 @@ def slice_segments(segs: list[Segment], t0: float, t1: float) -> list[Segment]:
             continue
         f = (b - a) / s.seconds if s.seconds > 0 else 0.0
         spans = [(max(x, t0), min(y, t1)) for x, y in s.est_spans if min(y, t1) > max(x, t0)]
-        out.append(Segment(a, b, s.kind, s.out_kwh * f, s.in_kwh * f, spans))
+        out.append(Segment(a, b, s.kind, s.out_kwh * f, s.in_kwh * f, spans,
+                           soc_start=_lerp(s.start, s.end, s.soc_start, s.soc_end, a),
+                           soc_end=_lerp(s.start, s.end, s.soc_start, s.soc_end, b)))
     return out
 
 
@@ -183,6 +227,8 @@ def merge_same_kind(segs: list[Segment]) -> list[Segment]:
             last.out_kwh += s.out_kwh
             last.in_kwh += s.in_kwh
             last.est_spans = last.est_spans + list(s.est_spans)
+            last.soc_end = s.soc_end if s.soc_end is not None else last.soc_end
         else:
-            out.append(Segment(s.start, s.end, s.kind, s.out_kwh, s.in_kwh, list(s.est_spans)))
+            out.append(Segment(s.start, s.end, s.kind, s.out_kwh, s.in_kwh, list(s.est_spans),
+                               soc_start=s.soc_start, soc_end=s.soc_end))
     return out

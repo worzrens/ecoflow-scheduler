@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QSize, QTime, QTimer, QVariantAnimation, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QSpinBox,
                                QTimeEdit, QWidget)
 
@@ -152,15 +152,26 @@ class ScheduleRow(QFrame):
                              enabled=self.on.isChecked())
 
 
-class SaveButton(QPushButton):
-    """Green primary chip. Greyed out while there is nothing to save; after a click it shows an animated check mark."""
+class ActionButton(QPushButton):
+    """The one button style for actions. Every new button should be this.
 
-    def __init__(self, text: str):
+    kind "primary" = green chip, "ghost" = outlined. Built-in feedback, so callers never hand-roll it:
+      flash(ok)      - drawn check mark (or cross when ok=False) in place of the label for ~1 s
+      begin()/finish(ok) - for slow actions: dots while running, then the flash
+      set_done(text) - "already done" state: greyed out with `text` until set_done(None)
+      set_enabled_look - disabled buttons are greyed (nothing to do)
+    `on_click(fn)` wires a function: no exception -> check mark, OSError/ValueError -> cross + tooltip with the message;
+    a function returning False means 'started something slow' and the caller ends it with finish()."""
+
+    def __init__(self, text: str, kind: str = "ghost", on_click=None, min_width: int = 0):
         super().__init__()
         self._label = text.replace("&&", "&")
+        self.kind = kind
+        self._base_tip = ""
         self.setCursor(Qt.PointingHandCursor)
-        self.setMinimumSize(180, 40)
-        self._showing = False
+        self.setMinimumSize(max(min_width, 180 if kind == "primary" else 0), 40 if kind == "primary" else 34)
+        self._mode = ""            # "", "ok", "fail", "busy"
+        self._done: str | None = None
         self._progress = 0.0
         self._anim = QVariantAnimation(self)
         self._anim.setStartValue(0.0)
@@ -170,17 +181,71 @@ class SaveButton(QPushButton):
         self._hold = QTimer(self)
         self._hold.setSingleShot(True)
         self._hold.timeout.connect(self._finish)
+        self._dots = QTimer(self)
+        self._dots.timeout.connect(self._tick)
+        self._tickn = 0
+        if on_click is not None:
+            self.clicked.connect(lambda *_: self._invoke(on_click))
+
+    # ---- sizing / text
+    def setText(self, text: str):
+        self._label = text.replace("&&", "&")
+        self.updateGeometry()
+        self.update()
+
+    def text(self) -> str:
+        return self._label
+
+    def sizeHint(self) -> QSize:
+        f = QFont(self.font())
+        f.setBold(self.kind == "primary")
+        w = QFontMetrics(f).horizontalAdvance(self._label) + 36
+        return QSize(max(w, self.minimumWidth()), self.minimumHeight())
+
+    # ---- feedback
+    def _invoke(self, fn):
+        try:
+            r = fn()
+        except (OSError, ValueError) as e:
+            self.flash(False, str(e))
+            return
+        if r is False:
+            self.begin()
+        else:
+            self.flash(True)
 
     def is_playing(self) -> bool:
-        return self._showing
+        return self._mode in ("ok", "fail")
 
-    def play_success(self):
-        """Replace the label with a drawn check mark for about a second."""
-        self._showing = True
+    def flash(self, ok: bool = True, message: str = ""):
+        self._dots.stop()
+        self._mode = "ok" if ok else "fail"
         self._progress = 0.0
         self._anim.stop()
         self._anim.start()
-        self._hold.start(1300)
+        self._hold.start(1300 if ok else 2200)
+        if message:
+            self.setToolTip(message)
+        self.update()
+
+    play_success = flash
+
+    def begin(self):
+        self._mode, self._tickn = "busy", 0
+        self._hold.stop()
+        self._dots.start(280)
+        self.update()
+
+    def finish(self, ok: bool = True, message: str = ""):
+        if self._mode == "busy":
+            self.flash(ok, message)
+
+    def set_done(self, text: str | None):
+        self._done = text
+        self.update()
+
+    def _tick(self):
+        self._tickn += 1
         self.update()
 
     def _on_progress(self, v):
@@ -188,36 +253,68 @@ class SaveButton(QPushButton):
         self.update()
 
     def _finish(self):
-        self._showing = False
+        self._mode = ""
+        self.setToolTip(self._base_tip)
         self.update()
 
+    # ---- painting
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        active = self.isEnabled() or self._showing
-        bg = QColor(GREEN if active else "#20242b")
-        if active and self.underMouse() and not self._showing:
-            bg = bg.lighter(112)
-        p.setPen(Qt.NoPen)
-        p.setBrush(bg)
         r = QRectF(self.rect())
-        p.drawRoundedRect(r, 8, 8)
-        if self._showing:
-            pts = [QPointF(-10, 0), QPointF(-3.5, 7), QPointF(10, -7)]
-            seg = [math.dist((a.x(), a.y()), (b.x(), b.y())) for a, b in zip(pts, pts[1:])]
-            left = self._progress * sum(seg)
-            c = r.center()
-            pen = QPen(QColor("#06130c"), 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            p.setPen(pen)
-            for (a, b), ln in zip(zip(pts, pts[1:]), seg):
-                if left <= 0:
-                    break
-                f = min(1.0, left / ln)
-                p.drawLine(c + a, c + QPointF(a.x() + (b.x() - a.x()) * f, a.y() + (b.y() - a.y()) * f))
-                left -= ln
+        primary = self.kind == "primary"
+        showing = self._mode in ("ok", "fail")
+        active = (self.isEnabled() and self._done is None) or showing
+        fail = self._mode == "fail"
+        hover = active and self.underMouse() and not showing
+        if primary:
+            bg = QColor("#e5534b" if fail else (GREEN if active else "#20242b"))
+            if hover:
+                bg = bg.lighter(112)
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            fg = QColor("#06130c" if active else "#5b6270")
+            if fail:
+                fg = QColor("#1a0605")
+        else:
+            edge = QColor("#e5534b" if fail else (GREEN if self._mode == "ok" else ("#3a3f4a" if active else "#2a2e36")))
+            p.setPen(QPen(edge, 1))
+            p.setBrush(QColor("#20242b") if hover else Qt.NoBrush)
+            fg = QColor("#e5534b" if fail else (GREEN if self._mode == "ok" else ("#d1d5db" if active else "#5b6270")))
+        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        if showing:
+            self._draw_mark(p, r, fg, fail)
             return
         f = QFont(self.font())
-        f.setBold(True)
+        f.setBold(primary)
         p.setFont(f)
-        p.setPen(QColor("#06130c" if active else "#5b6270"))
-        p.drawText(r, Qt.AlignCenter, self._label)
+        p.setPen(fg)
+        text = self._label
+        if self._mode == "busy":
+            text = "." * (self._tickn % 3 + 1)
+        elif self._done is not None:
+            text = self._done
+        p.drawText(r, Qt.AlignCenter, text)
+
+    def _draw_mark(self, p: QPainter, r: QRectF, color: QColor, fail: bool):
+        pts = ([QPointF(-7, -7), QPointF(7, 7), QPointF(7, -7), QPointF(-7, 7)] if fail else
+               [QPointF(-10, 0), QPointF(-3.5, 7), QPointF(10, -7)])
+        legs = [(pts[0], pts[1])] + ([(pts[2], pts[3])] if fail else [(pts[1], pts[2])])
+        total = sum(math.dist((a.x(), a.y()), (b.x(), b.y())) for a, b in legs)
+        left = self._progress * total
+        c = r.center()
+        p.setPen(QPen(color, 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        for a, b in legs:
+            ln = math.dist((a.x(), a.y()), (b.x(), b.y()))
+            if left <= 0:
+                break
+            f = min(1.0, left / ln)
+            p.drawLine(c + a, c + QPointF(a.x() + (b.x() - a.x()) * f, a.y() + (b.y() - a.y()) * f))
+            left -= ln
+
+
+class SaveButton(ActionButton):
+    """Green primary chip; greyed out while there is nothing to save, check mark after a click."""
+
+    def __init__(self, text: str):
+        super().__init__(text, "primary")

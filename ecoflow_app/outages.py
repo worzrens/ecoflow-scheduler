@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel,
 from .analytics import fmt_energy
 from .charts import CARD, CARD2, GREEN, GRID, MUTED, ORANGE, TEXT
 from .controller import Controller
-from .power import (MAX_GAP, Segment, fill_gaps, grid_segments, merge_same_kind, outage_count, outage_seconds,
+from .power import (MAX_GAP, Segment, fill_gaps, grid_segments, link_battery, merge_same_kind, outage_count, outage_seconds,
                     slice_segments)
 from .schedule import count_of, seconds_of
 
@@ -273,6 +273,8 @@ class OutageTimeline(QWidget):
         extra = ""
         if self.mode == "real" and s.kind != "nodata":
             extra = f" · {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}"
+            if s.battery(True):
+                extra += f" · {s.battery(True)}"
         inner = rect.adjusted(9, 4, -6, -2)
         if rect.height() >= 42:
             p.drawText(QRectF(inner.left(), inner.top(), inner.width(), 16), Qt.AlignLeft | Qt.AlignVCenter, self._title(s))
@@ -300,6 +302,8 @@ class OutageTimeline(QWidget):
         if self.mode == "real":
             if s.kind != "nodata":
                 lines.append((f"Power used: {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}", MUTED))
+                if s.battery():
+                    lines.append((s.battery(), MUTED))
             else:
                 lines.append(("Nothing was recorded (app off or unit offline)", MUTED))
         elif s.detail:
@@ -423,7 +427,7 @@ class OutageCard(QFrame):
         end = today + timedelta(days=1)
         rows = self.ctrl.history.range(first.timestamp() - 300)
         # whole range at once so estimates can use data on either side (also across midnight)
-        whole = merge_same_kind(fill_gaps(grid_segments(rows, first.timestamp(), end.timestamp(), now)))
+        whole = link_battery(merge_same_kind(fill_gaps(grid_segments(rows, first.timestamp(), end.timestamp(), now))))
         days = _day_infos(first, ndays, whole)
         configured = self.ctrl.schedule_configured
         self.cb_overlay.setEnabled(configured)

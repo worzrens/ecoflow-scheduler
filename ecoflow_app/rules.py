@@ -55,6 +55,14 @@ class Dynamic:
     watts_below: int = 1200  # used while SOC < threshold
     watts_above: int = 300  # used once SOC >= threshold
     hysteresis: int = 2
+    soc_low: int = 60        # below this SOC: watts_low (0 = no lowest tier, two tiers only)
+    watts_low: int = 1800
+
+    def levels(self) -> tuple[list[int], list[int]]:
+        """([SOC boundaries], [limits per tier]) from the lowest battery level up: <60 % -> 1800, 60-85 -> 1200, >=85 -> 300."""
+        if 0 < self.soc_low < self.soc_threshold:
+            return [self.soc_low, self.soc_threshold], [clamp(self.watts_low), clamp(self.watts_below), clamp(self.watts_above)]
+        return [self.soc_threshold], [clamp(self.watts_below), clamp(self.watts_above)]
 
 
 @dataclass
@@ -81,36 +89,44 @@ class RulesConfig:
 
 
 def effective_watts(cfg: RulesConfig, now: datetime, soc: float | None,
-                    below_state: bool = False, cur_limit: int | None = None) -> tuple[int, str, bool]:
+                    below_state: int = 0, cur_limit: int | None = None) -> tuple[int, str, int]:
     """Priority: temporary > schedule (first match) > dynamic > default.
 
-    Returns (watts, reason, new_below_state). Inside the hysteresis band the dynamic rule keeps
+    Returns (watts, reason, new_tier); `below_state` is the previous tier index. Inside the hysteresis band the dynamic rule keeps
     whatever the DEVICE is currently doing (cur_limit), so several controllers with equal rules
     agree without sharing any state; below_state is only the fallback when the device value is
     neither of the two dynamic watts.
     """
     d = cfg.dynamic
+    bounds, levels = d.levels()
+    tier = int(below_state)                      # previous tier: fallback inside a hysteresis band
     if d.enabled and soc is not None:
-        if soc < d.soc_threshold:
-            below_state = True
-        elif soc >= d.soc_threshold + d.hysteresis:
-            below_state = False
-        elif cur_limit is not None:  # inside the band: follow the device, not local memory
-            lo_w, hi_w = clamp(d.watts_below), clamp(d.watts_above)
-            if cur_limit == lo_w and cur_limit != hi_w:
-                below_state = True
-            elif cur_limit == hi_w and cur_limit != lo_w:
-                below_state = False
+        new = 0
+        for i, b in enumerate(bounds):
+            if soc >= b + d.hysteresis:
+                above = True
+            elif soc < b:
+                above = False
+            elif cur_limit is not None and cur_limit == levels[i] != levels[i + 1]:   # in the band: follow the device
+                above = False
+            elif cur_limit is not None and cur_limit == levels[i + 1] != levels[i]:
+                above = True
+            else:
+                above = tier > i
+            if not above:
+                break
+            new = i + 1
+        tier = min(new, len(levels) - 1)
 
     if cfg.temporary and now.timestamp() < cfg.temporary.until:
-        return clamp(cfg.temporary.watts), "Temporary rule", below_state
+        return clamp(cfg.temporary.watts), "Temporary rule", tier
     for e in cfg.schedule:
         if e.active_at(now):
-            return clamp(e.watts), f"Schedule {e.start}-{e.end}", below_state
+            return clamp(e.watts), f"Schedule {e.start}-{e.end}", tier
     if d.enabled and soc is not None:
-        w = d.watts_below if below_state else d.watts_above
-        return clamp(w), f"Dynamic (SOC {'<' if below_state else '>='} {d.soc_threshold}%)", below_state
-    return clamp(cfg.default_watts), "Default", below_state
+        sign, b = ("<", bounds[tier]) if tier < len(bounds) else (">=", bounds[-1])
+        return levels[tier], f"Dynamic (SOC {sign} {b}%)", tier
+    return clamp(cfg.default_watts), "Default", tier
 
 
 def short_reason(reason: str) -> str:
@@ -128,7 +144,7 @@ def short_reason(reason: str) -> str:
     return "\u2699 Default"
 
 
-def describe_rules(cfg: RulesConfig, now: datetime, soc: float | None, below_state: bool = False,
+def describe_rules(cfg: RulesConfig, now: datetime, soc: float | None, below_state: int = 0,
                    cur_limit: int | None = None) -> list[tuple[str, str, bool]]:
     """Explain every rule level as compact HTML: [(title, detail, is_applied)] in priority order."""
     applied_w, applied_reason, below_state = effective_watts(cfg, now, soc, below_state, cur_limit)
@@ -150,12 +166,13 @@ def describe_rules(cfg: RulesConfig, now: datetime, soc: float | None, below_sta
         rows.append(("\U0001F552 Schedule", "no windows", False))
     d = cfg.dynamic
     if d.enabled:
-        now_txt = "no reading yet" if soc is None else (
-            f"now {soc:.0f}% \u2192 {d.watts_below if below_state else d.watts_above} W")
-        rows.append(("\U0001F50B Dynamic",
-                     f"&lt;{d.soc_threshold}% \u2192 {d.watts_below} W &middot; "
-                     f"&ge;{d.soc_threshold}% \u2192 {d.watts_above} W<br>{now_txt}",
-                     applied_reason.startswith("Dynamic")))
+        bounds, levels = d.levels()
+        now_txt = "no reading yet" if soc is None else f"now {soc:.0f}% → {levels[min(below_state, len(levels) - 1)]} W"
+        parts = [f"&lt;{bounds[0]}% → {levels[0]} W"]
+        for i in range(1, len(bounds)):
+            parts.append(f"{bounds[i - 1]}–{bounds[i]}% → {levels[i]} W")
+        parts.append(f"&ge;{bounds[-1]}% → {levels[-1]} W")
+        rows.append(("🔋 Dynamic", " &middot; ".join(parts) + f"<br>{now_txt}", applied_reason.startswith("Dynamic")))
     else:
         rows.append(("\U0001F50B Dynamic", "off", False))
     rows.append(("\u2699 Default", f"{clamp(cfg.default_watts)} W", applied_reason == "Default"))

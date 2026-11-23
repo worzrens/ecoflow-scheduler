@@ -35,6 +35,10 @@ class ScheduleError(OSError):
     pass
 
 
+class Blocked(ScheduleError):
+    """The site answered with its bot-protection page (needs a human) - retrying soon only makes it worse."""
+
+
 @dataclass
 class ScheduleData:
     update: str = ""                                             # "21.11.2026 12:51" as published
@@ -50,7 +54,29 @@ def _grab(html: str, name: str):
 
 
 def parse_page(html: str) -> ScheduleData:
-    fact = _grab(html, "fact")
+    return parse_fact(_grab(html, "fact"))
+
+
+def parse_text(text: str) -> ScheduleData:
+    """Schedule pasted/sent from the user's own browser: the JSON of DisconSchedule.fact (or the whole page)."""
+    text = text.strip()
+    if "DisconSchedule." in text:
+        return parse_page(text)
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        if "<html" in text[:2000].lower() or "<!doctype" in text[:200].lower():
+            raise ScheduleError(f"That is a web page ({len(text) // 1024} KB) without the schedule in it "
+                                "(no 'DisconSchedule' text). The site may load the schedule only after an address is chosen.") from None
+        raise ScheduleError("That is not the schedule JSON.") from None
+    if isinstance(obj, dict) and isinstance(obj.get("fact"), dict):
+        obj = obj["fact"]
+    return parse_fact(obj)
+
+
+def parse_fact(fact) -> ScheduleData:
+    if not isinstance(fact, dict) or not isinstance(fact.get("data"), dict):
+        raise ScheduleError("That is not the schedule JSON.")
     out = ScheduleData(update=str(fact.get("update", "")))
     for ts, groups in (fact.get("data") or {}).items():
         day: dict[str, str] = {}
@@ -70,7 +96,21 @@ def fetch(region: str, session=None) -> ScheduleData:
     r = (session or requests).get(url, headers=HEADERS, timeout=30)
     if r.status_code != 200:
         raise ScheduleError(f"The site answered HTTP {r.status_code}")
-    return parse_page(r.content.decode("utf-8", "replace"))
+    html = r.content.decode("utf-8", "replace")
+    if "DisconSchedule.fact" not in html and ("Incapsula" in html or "_Incap" in html):
+        raise Blocked("The site asks for a human check (bot protection) - use 'Send from browser' below.")
+    return parse_page(html)
+
+
+BOOKMARKLET = (
+    "javascript:(async()=>{let t;const f=typeof DisconSchedule!=='undefined'&&DisconSchedule.fact;"
+    "try{t=f?JSON.stringify(f):await(await fetch(location.href,{credentials:'include'})).text()}"
+    "catch(e){t=document.documentElement.outerHTML}"
+    "try{const r=await fetch('http://127.0.0.1:%d/schedule',{method:'POST',body:t});"
+    "alert(await r.text())}catch(e){try{await navigator.clipboard.writeText(t);"
+    "alert('The browser blocked sending to the app. Schedule copied instead: in the app press Paste from clipboard.')}"
+    "catch(_){prompt('Copy this, then paste it in the app:',t.slice(0,100000))}}})()")
+IMPORT_PORT = 47321
 
 
 # ---------------------------------------------------------------- hours -> segments
@@ -113,6 +153,7 @@ class ScheduleResult:
     has_today: bool = False
     has_tomorrow: bool = False
     error: str = ""
+    source: str = "site"
 
     def text(self) -> str:
         when = time.strftime("%H:%M", time.localtime(self.at))
@@ -121,4 +162,4 @@ class ScheduleResult:
         have = ("today and tomorrow" if self.has_tomorrow else "today") if self.has_today else \
             ("tomorrow only" if self.has_tomorrow else "no days")
         tail = "" if self.has_tomorrow else " (tomorrow is not published yet)"
-        return f"Schedule fetched {when} \u00b7 published {self.update} \u00b7 page has {have}{tail}"
+        return f"Schedule {'imported from browser' if self.source == 'browser' else 'fetched'} {when} \u00b7 published {self.update} \u00b7 page has {have}{tail}"

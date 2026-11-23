@@ -125,3 +125,39 @@ def test_input_breakdown_matches_the_ecoflow_example():
     assert input_breakdown(815, 515) == (300, 515, 815)       # 815 W total = 515 W usage + 300 W charging
     assert input_breakdown(307, 310) == (0, 307, 307)         # full battery, pass-through: nothing charging
     assert input_breakdown(0, 250) == (0, 0, 0)               # no input
+
+
+def test_segments_track_battery_change():
+    from ecoflow_app.power import slice_segments
+    rows = [row(0, True, soc=17), row(60, True, soc=20), row(120, True, soc=23),     # charging on mains
+            row(180, False, soc=80), row(240, False, soc=70), row(300, False, soc=60)]  # outage, battery drops
+    segs = grid_segments(rows, 0, 300, now=300)
+    g, o = segs[0], segs[-1]
+    assert (g.kind, round(g.soc_start), round(g.soc_end)) == ("grid", 17, 80)
+    assert o.kind == "outage" and round(o.soc_start) == 80 and round(o.soc_end) == 60
+    assert o.battery() == "Battery 80% → 60%" and o.battery(True) == "80→60%"
+    half = slice_segments([o], 210, 270)[0]
+    assert round(half.soc_start) == 75 and round(half.soc_end) == 65
+    steady = grid_segments([row(0, True, soc=100), row(60, True, soc=100)], 0, 60, now=60)[0]
+    assert steady.battery() == "Battery 100% (steady)"
+
+
+def test_outage_battery_never_rises_across_an_estimated_gap():
+    from ecoflow_app.power import fill_gaps, merge_same_kind
+    # outage 73% -> 36%, app off for two hours (mains came back and recharged to 81%), then mains
+    rows = [row(0, False, soc=73), row(600, False, soc=50), row(1200, False, soc=36),
+            row(8400, True, soc=81), row(9000, True, soc=82)]
+    segs = merge_same_kind(fill_gaps(grid_segments(rows, 0, 9000, now=9000)))
+    o = segs[0]
+    assert o.kind == "outage" and round(o.soc_start) == 73 and round(o.soc_end) == 36, (o.soc_start, o.soc_end)
+
+
+def test_battery_is_continuous_between_blocks():
+    from ecoflow_app.power import fill_gaps, link_battery, merge_same_kind
+    rows = [row(t, False, soc=73 - t / 40) for t in range(0, 1200, 30)]                 # outage 73 -> ~43
+    rows += [row(t, True, soc=81 + (t - 8400) / 100) for t in range(8400, 9000, 30)]     # app was off in between
+    segs = link_battery(merge_same_kind(fill_gaps(grid_segments(rows, 0, 9000, now=9030))))
+    o, g = segs
+    assert (o.kind, g.kind) == ("outage", "grid")
+    assert round(o.soc_end) == round(g.soc_start) and round(o.soc_end) <= 44 and round(g.soc_end) >= 86, (o.soc_end, g.soc_start, g.soc_end)
+    assert round(o.soc_start) == 73

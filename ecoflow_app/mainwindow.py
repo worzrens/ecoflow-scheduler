@@ -22,10 +22,10 @@ from .rules import MAX_W, MIN_W, Dynamic, RulesConfig, ScheduleEntry, Temporary,
 from .settings import Settings
 from .settings import get_github_token
 from .power import input_breakdown
-from .schedule import GROUPS, REGIONS
+from .schedule import BOOKMARKLET, GROUPS, IMPORT_PORT, REGIONS
 from .sync import coverage, format_coverage
 from .util import fmt_duration
-from .widgets import InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
+from .widgets import ActionButton, InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
 
 DASH_RANGES = {"5 min": 300, "30 min": 1800, "1 hour": 3600, "6 hours": 6 * 3600, "24 hours": 86400,
                "7 days": 7 * 86400}
@@ -635,13 +635,16 @@ class MainWindow(QMainWindow):
 
         d = rules.dynamic
         self.cb_dyn = Switch(d.enabled)
-        c_dyn, v = self._section("Dynamic charging", "Charge faster while the battery is low, slower once it is fuller.",
+        c_dyn, v = self._section("Dynamic charging", "Charge faster while the battery is low, slower once it is fuller (set the first level to 0 % to use two steps).",
                                  self.cb_dyn)
         flow = FlowLayout(hspacing=10, vspacing=8)
+        self.sp_dyn_w0 = watts_stepper(d.watts_low)
+        self.sp_dyn_lo = Stepper(d.soc_low, 0, 99, 1, " %")
         self.sp_dyn_w1 = watts_stepper(d.watts_below)
         self.sp_dyn_thr = Stepper(d.soc_threshold, 1, 100, 1, " %")
         self.sp_dyn_w2 = watts_stepper(d.watts_above)
-        for x in (QLabel("Charge at"), self.sp_dyn_w1, QLabel("while battery is below"), self.sp_dyn_thr,
+        for x in (QLabel("Charge at"), self.sp_dyn_w0, QLabel("while battery is below"), self.sp_dyn_lo,
+                  QLabel("then at"), self.sp_dyn_w1, QLabel("until"), self.sp_dyn_thr,
                   QLabel("then at"), self.sp_dyn_w2):
             flow.addWidget(x)
         v.addLayout(flow)
@@ -667,7 +670,8 @@ class MainWindow(QMainWindow):
         pl.addLayout(bottom)
         # the button is only enabled while the form differs from the saved rules
         for sig in (self.cb_auto.toggled, self.cb_dyn.toggled, self.sp_default.valueChanged, self.sp_dyn_w1.valueChanged,
-                    self.sp_dyn_thr.valueChanged, self.sp_dyn_w2.valueChanged):
+                    self.sp_dyn_thr.valueChanged, self.sp_dyn_w2.valueChanged, self.sp_dyn_w0.valueChanged,
+                    self.sp_dyn_lo.valueChanged):
             sig.connect(self._update_dirty)
         self._update_dirty()
         self.tabs.addTab(page, "Control")
@@ -704,7 +708,8 @@ class MainWindow(QMainWindow):
             default_watts=self.sp_default.value(),
             schedule=[r.entry() for r in self.sched_rows],
             dynamic=Dynamic(enabled=self.cb_dyn.isChecked(), soc_threshold=self.sp_dyn_thr.value(),
-                            watts_below=self.sp_dyn_w1.value(), watts_above=self.sp_dyn_w2.value()),
+                            watts_below=self.sp_dyn_w1.value(), watts_above=self.sp_dyn_w2.value(),
+                            soc_low=self.sp_dyn_lo.value(), watts_low=self.sp_dyn_w0.value()),
             temporary=deepcopy(cur.temporary))
 
     def _save_rules(self):
@@ -787,8 +792,7 @@ class MainWindow(QMainWindow):
         dl.setContentsMargins(0, 0, 0, 0)
         self.lbl_acct = QLabel("")
         self.lbl_acct.setObjectName("chipon")
-        b_edit = QPushButton("Edit credentials")
-        b_edit.setObjectName("ghost")
+        b_edit = ActionButton("Edit credentials")
         b_edit.clicked.connect(self._edit_account)
         dl.addWidget(self.lbl_acct)
         dl.addWidget(b_edit)
@@ -895,8 +899,7 @@ class MainWindow(QMainWindow):
         dl.setContentsMargins(0, 0, 0, 0)
         self.lbl_gh_repo = QLabel("")
         self.lbl_gh_repo.setObjectName("chipon")
-        b_edit = QPushButton("Edit connection")
-        b_edit.setObjectName("ghost")
+        b_edit = ActionButton("Edit connection")
         b_edit.clicked.connect(self._edit_github)
         dl.addWidget(self.lbl_gh_repo)
         dl.addWidget(b_edit)
@@ -907,11 +910,9 @@ class MainWindow(QMainWindow):
         self.box_actions = QWidget()
         al = FlowLayout(self.box_actions, hspacing=10, vspacing=8)
         al.setContentsMargins(0, 0, 0, 0)
-        b_now = QPushButton("Sync now")
-        b_now.setObjectName("ghost")
-        b_now.clicked.connect(self.ctrl.sync_now)
-        b_off = QPushButton("Stop syncing")
-        b_off.setObjectName("ghost")
+        self.b_now = ActionButton("Sync now", on_click=lambda: (self.ctrl.sync_now(), False)[1])
+        b_now = self.b_now
+        b_off = ActionButton("Stop syncing")
         b_off.clicked.connect(lambda: self._on_sync_mode(""))
         al.addWidget(b_now)
         al.addWidget(b_off)
@@ -963,12 +964,23 @@ class MainWindow(QMainWindow):
         for g in GROUPS:
             self.cmb_group.addItem(f"Group {g}", g)
         self.cmb_group.setCurrentIndex(max(0, self.cmb_group.findData(st.outage_group)))
-        b_upd = QPushButton("Update now")
-        b_upd.setObjectName("ghost")
-        b_upd.clicked.connect(self.ctrl.fetch_schedule)
+        self.b_upd = b_upd = ActionButton("Update now", on_click=self._update_schedule)
         for x in (self.cmb_region, self.cmb_group, b_upd):
             row.addWidget(x)
         v.addLayout(row)
+        how = QLabel("If the site shows a security check and the automatic update fails, open its page in your own browser, "
+                     "pass the check, and send the schedule from there: create a bookmark whose address is the copied code, "
+                     "open the DTEK page and click the bookmark. Or run it, then use Paste from clipboard.")
+        how.setObjectName("muted")
+        how.setWordWrap(True)
+        row2 = FlowLayout(hspacing=10, vspacing=8)
+        b_bm = ActionButton("Copy bookmark code",
+                            on_click=lambda: QApplication.clipboard().setText(BOOKMARKLET % IMPORT_PORT))
+        b_paste = ActionButton("Paste from clipboard", on_click=self._paste_schedule)
+        row2.addWidget(b_bm)
+        row2.addWidget(b_paste)
+        v.addWidget(how)
+        v.addLayout(row2)
         self.lbl_sched = QLabel("Choose a region and a group." if not self.ctrl.schedule_configured else "Not updated yet")
         self.lbl_sched.setObjectName("muted")
         self.lbl_sched.setWordWrap(True)
@@ -978,6 +990,20 @@ class MainWindow(QMainWindow):
         self.ctrl.schedule_status.connect(self._on_schedule_status)
         return c
 
+    def _update_schedule(self):
+        if not self.ctrl.schedule_configured:
+            raise ValueError("Choose a region and a group first")
+        self.lbl_sched.setText("Updating...")
+        self.ctrl.fetch_schedule()
+        return False                                  # slow: the button ends itself in _on_schedule_status
+
+    def _paste_schedule(self):
+        try:
+            self.lbl_sched.setText(self.ctrl.import_schedule(QApplication.clipboard().text()))
+        except (OSError, ValueError) as e:
+            self.lbl_sched.setText(f"Could not import: {e}")
+            raise
+
     def _on_schedule_choice(self, *_):
         region, group = self.cmb_region.currentData() or "", self.cmb_group.currentData() or ""
         self.lbl_sched.setText("Updating..." if region and group else "Choose a region and a group.")
@@ -986,6 +1012,8 @@ class MainWindow(QMainWindow):
 
     def _on_schedule_status(self, text: str):
         self.lbl_sched.setText(text)
+        r = self.ctrl.schedule_result
+        self.b_upd.finish(not (r and r.error), r.error if r else "")
         self._refresh_stats()
 
     def _show_sync_mode(self, mode: str):
@@ -1054,6 +1082,8 @@ class MainWindow(QMainWindow):
 
     def _on_sync_status(self, text: str):
         self.lbl_sync.setText(text)
+        r = self.ctrl.sync_result
+        self.b_now.finish(not (r and r.error), r.error if r else "")
         self.b_conn.setEnabled(True)
         mode = self.ctrl.settings.sync_mode
         if not mode:

@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import schedule, sync
+from . import importer, schedule, sync
 from .api import POLL_FAST, POLL_SLOW, EcoflowClient, Telemetry
 from .engine import RuleEngine
 from .paths import DB_PATH, SETTINGS_PATH
@@ -58,9 +58,11 @@ class Controller(QObject):
         self._schedule_busy = False
         self.schedule_done.connect(self._on_schedule_done)
         self._schedule_timer = QTimer(self)
-        self._schedule_timer.timeout.connect(self.fetch_schedule)
+        self._schedule_timer.timeout.connect(lambda: self.fetch_schedule(manual=False))
         self._schedule_timer.start(schedule.FETCH_EVERY * 1000)
         QTimer.singleShot(20000, self.fetch_schedule)
+        self._blocked_until = 0.0         # after a bot-protection answer the automatic fetch pauses
+        self._import_server = importer.start(schedule.IMPORT_PORT, self.import_schedule)   # 'Send from browser'
 
     @property
     def fresh(self) -> bool:
@@ -100,8 +102,10 @@ class Controller(QObject):
         st = self.settings
         return st.outage_region in schedule.REGIONS and st.outage_group in schedule.GROUPS
 
-    def fetch_schedule(self):
+    def fetch_schedule(self, manual: bool = True):
         if not self.schedule_configured or self._schedule_busy:
+            return
+        if not manual and time.time() < self._blocked_until:
             return
         self._schedule_busy = True
         threading.Thread(target=self._schedule_worker, args=(self.settings.outage_region,), daemon=True,
@@ -110,15 +114,32 @@ class Controller(QObject):
     def _schedule_worker(self, region: str):
         res = schedule.ScheduleResult(at=time.time())
         try:
-            data = schedule.fetch(region)
-            self.history.schedule_put(region, data.days, data.update)
-            res.update, res.days = data.update, len(data.days)
-            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-            res.has_today = any(today <= d < today + 86400 for d in data.days)
-            res.has_tomorrow = any(today + 86400 <= d < today + 2 * 86400 for d in data.days)
+            self._store_schedule(region, schedule.fetch(region), res)
+        except schedule.Blocked as e:
+            res.error = str(e)
+            self._blocked_until = time.time() + 3600
         except (OSError, ValueError) as e:      # requests' errors are OSErrors too
             res.error = str(e)
         self.schedule_done.emit(res)
+
+    def _store_schedule(self, region: str, data, res):
+        self.history.schedule_put(region, data.days, data.update)
+        res.update, res.days = data.update, len(data.days)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        res.has_today = any(today <= d < today + 86400 for d in data.days)
+        res.has_tomorrow = any(today + 86400 <= d < today + 2 * 86400 for d in data.days)
+        self._blocked_until = 0.0
+
+    def import_schedule(self, text: str) -> str:
+        """Schedule handed over from the user's browser (bookmarklet or clipboard). Runs on any thread; returns a reply."""
+        region = self.settings.outage_region
+        if region not in schedule.REGIONS:
+            raise ValueError("Choose a region in Settings first.")
+        res = schedule.ScheduleResult(at=time.time(), source="browser")
+        self._store_schedule(region, schedule.parse_text(text), res)
+        self._schedule_busy = False
+        self.schedule_done.emit(res)
+        return "Sent to EcoFlow Scheduler: " + res.text()
 
     def _on_schedule_done(self, res):
         self._schedule_busy = False

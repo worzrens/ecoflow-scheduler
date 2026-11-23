@@ -25,7 +25,7 @@ class RuleEngine(QObject):
         self.client = client
         self.rules = rules
         self.last: Telemetry | None = None
-        self._below = False
+        self._below = 0
         self._sent: tuple[int, float] | None = None
         self._sends: deque[float] = deque()
         self.guard_tripped = False
