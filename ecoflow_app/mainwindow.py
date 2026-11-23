@@ -516,8 +516,8 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- statistics
     def _build_stats(self):
-        self.stats_power = AnalyticsCard(self.ctrl, "power", "Statistic", STAT_RANGES, "7 days")
-        self.stats_soc = AnalyticsCard(self.ctrl, "soc", "Battery", STAT_RANGES, "7 days")
+        self.stats_power = AnalyticsCard(self.ctrl, "power", "Statistic", STAT_RANGES, "3 days")
+        self.stats_soc = AnalyticsCard(self.ctrl, "soc", "Battery", STAT_RANGES, "3 days")
         self.stats_outage = OutageCard(self.ctrl)
         self.stats_power.setMinimumHeight(300)
         self.stats_soc.setMinimumHeight(250)

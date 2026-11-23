@@ -399,7 +399,7 @@ class OutageCard(QFrame):
         self.cmb = QComboBox()
         self.cmb.setObjectName("pill")
         self.cmb.addItems(list(RANGES))
-        self.cmb.setCurrentText("7 days")
+        self.cmb.setCurrentText("3 days")
         self.cmb.currentTextChanged.connect(lambda *_: self.refresh())
         controls = QHBoxLayout()                    # checkbox + range share one row and one centre line
         controls.setSpacing(14)
@@ -467,7 +467,7 @@ class ExpectedOutageCard(QFrame):
         self.cmb = QComboBox()
         self.cmb.setObjectName("pill")
         self.cmb.addItems(list(EXPECTED_RANGES))
-        self.cmb.setCurrentText("Today + tomorrow")
+        self.cmb.setCurrentText("3 days")
         self.cmb.currentTextChanged.connect(lambda *_: self.refresh())
         head.addWidget(self.cmb, 0)
         lay.addLayout(head)

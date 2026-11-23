@@ -31,7 +31,7 @@ def test_gaps_are_filled_from_the_other_device_and_empty_stays_empty(tmp_path):
     a, b = new(tmp_path, "a"), new(tmp_path, "b")
     # A recorded hours -6..-3 and -1..0; B recorded -4..-1.5 -> A has a hole -3..-1, B fills it; nobody has -8..-6
     fill(a, now - 6 * 3600, now - 3 * 3600)
-    fill(a, now - 1 * 3600, now)
+    fill(a, now - 1 * 3600, now, soc=75.0)         # a different level than before the hole (a battery never repeats exactly)
     fill(b, now - 4 * 3600 + 7, now - 1.5 * 3600, soc=70.0)     # +7 s: real devices never share exact timestamps
     assert sync.sync_once(a, str(root), SN, "A").exported > 0
     assert sync.sync_once(b, str(root), SN, "B").exported > 0
@@ -40,7 +40,7 @@ def test_gaps_are_filled_from_the_other_device_and_empty_stays_empty(tmp_path):
     c = sync.coverage(a, days=1, now=now)
     only_a = new(tmp_path, "only_a")
     fill(only_a, now - 6 * 3600, now - 3 * 3600)
-    fill(only_a, now - 1 * 3600, now)
+    fill(only_a, now - 1 * 3600, now, soc=75.0)
     before = sync.coverage(only_a, days=1, now=now)
     assert c["covered_pct"] > before["covered_pct"] + 5     # B adds -3..-1.5 h (1.5 h = 6 points of the 24 h window)
     assert 1.3 < c["filled_by_peers_h"] < 1.7 and 0.8 < c["both_h"] < 1.2
