@@ -36,6 +36,47 @@ def row_grid(row: tuple) -> bool:
     return bool(g)
 
 
+STALE_REPLAY_GAP = 600      # a source silent this long, then reporting its old state again, is suspect
+STALE_SOC_TOL = 0.3          # "same state as before the silence": battery level within this many points
+STALE_CONTRADICTION = 5      # another install recorded a level this far away (or the other mains state) in between
+
+
+def drop_stale_samples(rows: list[tuple]) -> list[tuple]:
+    """Remove samples that replay an old state. After a sleep/reconnect an install can record its last known reading
+    (same level, limit and mains state as before it went silent) stamped with the current time. It is dropped when
+    another install recorded something clearly different while this one was silent - a battery does not return to
+    exactly the same level after a recharge or a discharge. Rows: (ts, soc, in, out, ac_in, ac_out, limit, temp, grid[, src]).
+    Without a second install there is nothing to compare with, so nothing is dropped."""
+    def src(r):
+        return r[9] if len(r) > 9 else None
+    if len({src(r) for r in rows}) < 2:
+        return rows
+    last: dict = {}            # src -> last row seen (kept or dropped, to measure the silence correctly)
+    drop: set[int] = set()
+    replay: dict = {}          # src -> the old row whose state is currently being replayed
+    for i, r in enumerate(rows):
+        s = src(r)
+        p = last.get(s)
+        last[s] = r
+        if p is None or r[1] is None or p[1] is None:
+            continue
+        same = abs(r[1] - p[1]) <= STALE_SOC_TOL and r[6] == p[6] and row_grid(r) == row_grid(p)
+        if s in replay:                                             # already inside a replayed burst
+            ref = replay[s]
+            if r[0] - p[0] <= MAX_GAP and abs(r[1] - ref[1]) <= STALE_SOC_TOL and row_grid(r) == row_grid(ref):
+                drop.add(i)
+                continue
+            del replay[s]
+        if r[0] - p[0] < STALE_REPLAY_GAP or not same:
+            continue
+        other = next((o for o in reversed(rows[:i]) if src(o) != s and o[0] > p[0]), None)
+        if other is not None and other[1] is not None and (
+                abs(other[1] - r[1]) > STALE_CONTRADICTION or row_grid(other) != row_grid(r)):
+            drop.add(i)
+            replay[s] = p
+    return [r for i, r in enumerate(rows) if i not in drop]
+
+
 def state_since(rows: list[tuple]) -> tuple[str | None, float | None]:
     """Walk history rows (ascending) and return (current state, timestamp the current run started)."""
     prev, since = None, None

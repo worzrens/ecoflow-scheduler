@@ -6,7 +6,10 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+from .power import drop_stale_samples
+
 KEEP_SECONDS = 8 * 86400
+STALE_CONTEXT = 6 * 3600  # extra history read before a range so a replayed sample can be compared with what came before
 MIN_INTERVAL = 30  # seconds between stored samples
 
 # Row layout returned by range(): (ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid, src)
@@ -130,7 +133,9 @@ class History:
         with self._lock:
             rows = self._db.execute(
                 f"SELECT {cols} FROM samples WHERE ts >= ? AND ts <= ? ORDER BY ts",
-                (int(since), int(until or time.time() + 1))).fetchall()
+                (int(since) - STALE_CONTEXT, int(until or time.time() + 1))).fetchall()
+        rows = [r for r in drop_stale_samples(rows) if r[0] >= int(since)]      # context before `since` only feeds the filter
+        with self._lock:
             if with_prev:
                 prev = self._db.execute(f"SELECT {cols} FROM samples WHERE ts < ? ORDER BY ts DESC LIMIT 1",
                                         (int(since),)).fetchone()

@@ -109,6 +109,7 @@ class EcoflowClient(QObject):
         self._client: mqtt.Client | None = None
         self._uid = ""
         self._quota: dict = {}
+        self._seeded = False        # True once a full latestQuotas reply of THIS connection filled _quota
         self._last_reply = 0.0
         self._poll = POLL_SLOW
         self._wake = threading.Event()
@@ -195,6 +196,7 @@ class EcoflowClient(QObject):
         c.on_connect = self._on_connect
         c.on_message = self._on_message
         self._client = c
+        self._quota, self._seeded = {}, False      # state kept across a sleep/reconnect is stale: start from scratch
         c.connect(url, port, keepalive=15)
         c.loop_start()
         for _ in range(100):  # wait up to 10 s for CONNACK
@@ -221,14 +223,18 @@ class EcoflowClient(QObject):
             data = body.get("data", {})
             self._last_reply = time.time()
             if int(data.get("online", 0)) != 1:
+                self._quota, self._seeded = {}, False
                 self.online.emit(False)
                 self.status.emit("Device offline (cloud reachable)")
                 return
             self._quota = dict(data.get("quotaMap", {}))
+            self._seeded = True
         else:
             p = body.get("params")
             # the unit pushes a constant stream of unrelated 'kit.*' messages - ignore those
             if isinstance(p, dict) and USED_KEYS.intersection(p):
+                if not self._seeded:
+                    return        # a push alone would be merged into old/empty state and recorded as a fresh sample
                 self._quota.update(p)
             else:
                 return

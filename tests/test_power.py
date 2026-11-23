@@ -176,3 +176,30 @@ def test_green_100_then_estimated_outage_then_green_100():
     assert round(g1.soc_end) == 100 and round(g2.soc_start) == 100 and round(g2.soc_end) == 100
     assert g2.battery(True) == "100%"                                    # shown as steady 100%, never "28->100"
     assert o.soc_end <= o.soc_start and o.guessed
+
+
+def test_replayed_old_state_is_dropped_when_another_install_contradicts_it():
+    from ecoflow_app.power import drop_stale_samples, fill_gaps, merge_same_kind
+    def r(ts, grid, soc, src):
+        return row(ts, grid, soc=soc) + (src,)
+    rows = [r(0, False, 27.91, "pc2"),                                   # pc2: last reading of an outage, then it sleeps
+            *[r(t, True, 99.6, "pc1") for t in range(1000, 7000, 60)],   # pc1: mains present, battery full
+            r(7300, False, 27.89, "pc2"),                                # pc2 wakes up and replays its old state
+            *[r(t, True, 99.5, "pc1") for t in range(7320, 9000, 60)],
+            r(20000, True, 99.1, "pc2")]                                 # pc2 really back
+    kept = drop_stale_samples(rows)
+    assert (7300, 27.89) not in [(x[0], x[1]) for x in kept] and len(kept) == len(rows) - 1
+    segs = merge_same_kind(fill_gaps(grid_segments(kept, 1000, 9000, now=9000)))
+    assert [s.kind for s in segs] == ["grid"]                            # no phantom outage
+
+
+def test_stale_filter_leaves_genuine_data_alone():
+    from ecoflow_app.power import drop_stale_samples
+    def r(ts, grid, soc, src):
+        return row(ts, grid, soc=soc) + (src,)
+    one_install = [r(0, False, 28, "pc2"), r(7300, False, 28, "pc2")]
+    assert drop_stale_samples(one_install) == one_install               # nothing to compare with
+    changed = [r(0, False, 28, "pc2"), r(3000, True, 99, "pc1"), r(7300, True, 99, "pc2")]
+    assert drop_stale_samples(changed) == changed                       # level really moved: a normal wake-up
+    agree = [r(0, True, 99, "pc2"), r(3000, True, 99, "pc1"), r(7300, True, 99, "pc2")]
+    assert drop_stale_samples(agree) == agree                           # same state AND the other install agrees
