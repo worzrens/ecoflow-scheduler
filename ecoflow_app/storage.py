@@ -70,6 +70,19 @@ class History:
             self._db.commit()
         return len(rows)
 
+    def schedule_rows(self, since: float) -> list[tuple]:
+        """(region, day, group, hours, published) for days after `since` (what gets shared)."""
+        with self._lock:
+            return self._db.execute("SELECT region, day, grp, hours, updated FROM schedule WHERE day >= ? "
+                                    "ORDER BY region, day, grp", (int(since),)).fetchall()
+
+    def schedule_put_rows(self, rows: list[tuple]) -> None:
+        if not rows:
+            return
+        with self._lock:
+            self._db.executemany("INSERT OR REPLACE INTO schedule (region, day, grp, hours, updated) VALUES (?,?,?,?,?)", rows)
+            self._db.commit()
+
     def schedule_count(self, region: str) -> int:
         """How many day/group rows were ever saved for the region (0 = the schedule was never fetched)."""
         with self._lock:

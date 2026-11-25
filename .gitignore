@@ -11,3 +11,8 @@ probe_dump.jsonl
 .idea/
 assets/app.iconset/
 assets/app.icns
+android/.gradle/
+android/build/
+android/app/build/
+*.jks
+*.keystore

@@ -29,6 +29,7 @@ from .widgets import ActionButton, InfoIcon, SaveButton, ScheduleRow, Stepper, S
 
 DASH_RANGES = {"5 min": 300, "30 min": 1800, "1 hour": 3600, "6 hours": 6 * 3600, "24 hours": 86400,
                "7 days": 7 * 86400}
+PRIORITY_NOTE = "Priority: Temporary rule > Schedule > Dynamic > Default"
 STAT_RANGES = {"24 hours": 86400, "3 days": 3 * 86400, "7 days": 7 * 86400}
 
 STYLE = """
@@ -661,8 +662,10 @@ class MainWindow(QMainWindow):
         pl.addWidget(sc, 1)
 
         bottom = QHBoxLayout()
-        note = QLabel("Priority: Temporary rule > Schedule > Dynamic > Default")
+        note = self.lbl_rules_note = QLabel(PRIORITY_NOTE)
         note.setObjectName("muted")
+        note.setWordWrap(True)
+        self.ctrl.settings_synced.connect(self._on_settings_synced)
         self.btn_save = SaveButton("Save && apply")
         self.btn_save.clicked.connect(self._save_rules)
         bottom.addWidget(note, 1)
@@ -712,7 +715,38 @@ class MainWindow(QMainWindow):
                             soc_low=self.sp_dyn_lo.value(), watts_low=self.sp_dyn_w0.value()),
             temporary=deepcopy(cur.temporary))
 
+    def _load_rules_form(self):
+        """Fill the Control tab from the active rules (they changed on another device)."""
+        r = self.ctrl.engine.rules
+        d = r.dynamic
+        values = ((self.sp_default, r.default_watts), (self.sp_dyn_w0, d.watts_low), (self.sp_dyn_lo, d.soc_low),
+                  (self.sp_dyn_w1, d.watts_below), (self.sp_dyn_thr, d.soc_threshold), (self.sp_dyn_w2, d.watts_above))
+        btn, self.btn_save = self.btn_save, None             # no dirty checks while the form is half filled
+        for row in list(self.sched_rows):
+            self._remove_row(row)
+        for e in r.schedule:
+            self._add_row(e)
+        for widget, value in values:
+            widget.setValue(value)
+        self.cb_auto.setChecked(r.automation_enabled)
+        self.cb_dyn.setChecked(d.enabled)
+        self.btn_save = btn
+        self._update_dirty()
+
+    def _on_settings_synced(self, text: str):
+        st = self.ctrl.settings
+        for cmb, value in ((self.cmb_region, st.outage_region), (self.cmb_group, st.outage_group)):
+            cmb.blockSignals(True)
+            cmb.setCurrentIndex(max(0, cmb.findData(value)))
+            cmb.blockSignals(False)
+        # newest wins: the form follows the synced rules, so unsaved edits cannot silently undo them
+        self._load_rules_form()
+        self.lbl_rules_note.setText(text)
+        self._refresh_dashboard()
+        self._refresh_stats()
+
     def _save_rules(self):
+        self.lbl_rules_note.setText(PRIORITY_NOTE)
         self.ctrl.engine.set_rules(self._collect_rules())
         self._refresh_dashboard()
         self.btn_save.play_success()      # check-mark animation instead of the label

@@ -19,6 +19,7 @@ GUARD_WINDOW = 600     # ... within this many seconds => another controller is p
 class RuleEngine(QObject):
     changed = Signal(int, str)   # effective watts, reason
     guard = Signal(str)          # conflict guard tripped (automation paused until rules are saved again)
+    saved = Signal()             # the user changed the rules on this device (not: received from another one)
 
     def __init__(self, client: EcoflowClient | None, rules: RulesConfig):
         super().__init__()
@@ -34,13 +35,15 @@ class RuleEngine(QObject):
         self._timer.timeout.connect(self.evaluate)
         self._timer.start(15_000)
 
-    def set_rules(self, rules: RulesConfig, persist: bool = True):
+    def set_rules(self, rules: RulesConfig, persist: bool = True, local: bool = True):
         self.rules = rules
         if persist:
             save_rules(rules)
         self._sent = None
         self._sends.clear()
         self.guard_tripped = False  # the user acted: resume
+        if local and persist:
+            self.saved.emit()
         self.evaluate()
 
     def describe(self):

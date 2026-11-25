@@ -1,4 +1,4 @@
-"""Read-only sharing of power history between installs.
+"""Sharing of power history (plus settings and the outage schedule, see shared.py) between installs.
 
 Every install
   * writes ONLY its own files   <store>/ecoflow-history/<serial>/<machine id>/<chunk>.jsonl  and
@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import base64
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ from pathlib import Path
 
 import requests
 
+from . import shared
 from .power import COVER_AFTER_SAMPLE, MAX_GAP
 from .storage import KEEP_SECONDS, SRC_IDX, History
 
@@ -109,7 +111,9 @@ class FolderTransport(Transport):
 
     def list_files(self, peer):
         out = {}
-        for f in (self.base / peer).glob("*.jsonl"):
+        for f in (self.base / peer).glob("*.json*"):
+            if f.name.startswith("."):           # half-written temporary file
+                continue
             try:
                 st = f.stat()
                 out[f.name] = f"{st.st_size}:{st.st_mtime_ns}"
@@ -205,7 +209,7 @@ class GitHubTransport(Transport):
 
     def list_files(self, peer):
         return {e["name"]: e["sha"] for e in self._list(f"{self._base}/{peer}")
-                if e.get("type") == "file" and e["name"].endswith(".jsonl")}
+                if e.get("type") == "file" and e["name"].endswith((".jsonl", ".json"))}
 
     def read(self, peer, name):
         r = self._req("GET", f"/contents/{self._base}/{peer}/{name}", raw=True)
@@ -322,6 +326,36 @@ def import_peers(history: History, tr: Transport) -> dict[str, tuple[str, int]]:
     return result
 
 
+def publish(history: History, tr: Transport, docs: dict[str, bytes]) -> None:
+    """Write our shared documents, only when their content changed (every GitHub write is a commit)."""
+    for name, data in docs.items():
+        key = f"doc:{tr.ident}:{name}"
+        digest = hashlib.sha1(data).hexdigest()
+        if history.meta_get(key) != digest:
+            tr.write(name, data)
+            history.meta_set(key, digest)
+
+
+def read_shared(history: History, tr: Transport) -> tuple[list[dict], int]:
+    """The other installs' settings documents (for the caller to apply) and how many schedule rows were taken over."""
+    settings, schedule_rows = [], 0
+    for peer in tr.list_peers():
+        files = tr.list_files(peer)
+        try:
+            if shared.SETTINGS_FILE in files:
+                doc = json.loads(tr.read(peer, shared.SETTINGS_FILE))
+                if isinstance(doc, dict):
+                    settings.append(doc)
+            token = files.get(shared.SCHEDULE_FILE)
+            key = f"import:{peer}:{shared.SCHEDULE_FILE}"
+            if token and history.meta_get(key) != token:
+                schedule_rows += shared.apply_schedule(history, tr.read(peer, shared.SCHEDULE_FILE))
+                history.meta_set(key, token)
+        except (ValueError, TypeError, AttributeError):     # a damaged file from one install must not stop the rest
+            continue
+    return settings, schedule_rows
+
+
 @dataclass
 class SyncResult:
     at: float = 0.0
@@ -329,6 +363,8 @@ class SyncResult:
     imported: int = 0
     peers: list[str] = field(default_factory=list)
     error: str = ""
+    peer_settings: list[dict] = field(default_factory=list)
+    schedule_rows: int = 0
 
     def text(self) -> str:
         when = datetime.fromtimestamp(self.at).strftime("%H:%M")
@@ -339,7 +375,7 @@ class SyncResult:
 
 
 def sync_once(history: History, store, sn: str | None = None, machine_id: str | None = None,
-              progress=None) -> SyncResult:
+              progress=None, docs: dict[str, bytes] | None = None) -> SyncResult:
     """One round: check the store, share our new samples, read the others'. `store` is a Transport or a folder path.
     `progress(text)` is called with the phase: connecting -> sending -> reading the other devices."""
     tr = store if isinstance(store, Transport) else FolderTransport(store, sn, machine_id)
@@ -354,6 +390,8 @@ def sync_once(history: History, store, sn: str | None = None, machine_id: str | 
         got = import_peers(history, tr)
         res.imported = sum(n for _, n in got.values())
         res.peers = [label for label, _ in got.values()]
+        publish(history, tr, {shared.SCHEDULE_FILE: shared.schedule_doc(history), **(docs or {})})
+        res.peer_settings, res.schedule_rows = read_shared(history, tr)
     except (OSError, ValueError, KeyError) as e:     # requests' errors are OSErrors too
         res.error = str(e)
     return res

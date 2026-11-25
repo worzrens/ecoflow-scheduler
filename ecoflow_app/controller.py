@@ -1,6 +1,7 @@
 """Glue object: owns client, history and rule engine; forwards signals to the UI."""
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from datetime import datetime
@@ -9,10 +10,10 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import importer, schedule, sync
+from . import importer, schedule, shared, sync
 from .api import POLL_FAST, POLL_SLOW, EcoflowClient, Telemetry
 from .engine import RuleEngine
-from .paths import DB_PATH, SETTINGS_PATH
+from .paths import DB_PATH, RULES_PATH, SETTINGS_PATH
 from .power import state_of, state_since
 from .settings import Settings, load_rules, load_settings, save_settings, set_github_token
 from .storage import History
@@ -29,6 +30,7 @@ class Controller(QObject):
     schedule_done = Signal(object)  # ScheduleResult from the fetch thread
     schedule_status = Signal(str)   # text for the Settings tab; also tells the graphs to refresh
     sync_progress = Signal(str)     # phase text while a round is running: connecting / sending / reading
+    settings_synced = Signal(str)   # "Updated from <device> ..." after another install's settings were applied
 
     def __init__(self):
         super().__init__()
@@ -45,7 +47,13 @@ class Controller(QObject):
         self.power_state, self.state_since_ts = state_since(self.history.range(time.time() - 3 * 86400))
         self.live: deque = deque(maxlen=8000)  # ~1 Hz samples, enough for the 1 hour graph
         self.status_text = "Not configured" if not self.settings.complete else "Starting..."
-        # automatic, read-only sharing of power history with other installs (see sync.py)
+        # settings shared between installs: remember when each part last changed here (see shared.py)
+        self._note_shared(first_seen=self._file_times())
+        self._soon = QTimer(self)               # one sync shortly after a local change
+        self._soon.setSingleShot(True)
+        self._soon.timeout.connect(self.sync_now)
+        self.engine.saved.connect(self._on_local_change)
+        # automatic sharing of power history, settings and the schedule with other installs (see sync.py)
         self.sync_result: sync.SyncResult | None = None
         self._sync_busy = False
         self.sync_done.connect(self._on_sync_done)
@@ -63,6 +71,51 @@ class Controller(QObject):
         QTimer.singleShot(20000, self.fetch_schedule)
         self._blocked_until = 0.0         # after a bot-protection answer the automatic fetch pauses
         self._import_server = importer.start(schedule.IMPORT_PORT, self.import_schedule)   # 'Send from browser'
+
+    # ---- shared settings
+    def _file_times(self) -> dict:
+        """Change times to assume on the very first run with shared settings: when the user last saved them here."""
+        def mtime(p):
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0
+        rules_at = mtime(RULES_PATH)
+        outage_at = mtime(SETTINGS_PATH) if self.settings.outage_region else 0
+        return {"rules": rules_at, "temporary": rules_at, "automation": rules_at, "outage": outage_at}
+
+    def _note_shared(self, first_seen: dict | None = None) -> dict:
+        values = shared.current_values(self.engine.rules, self.settings.outage_region, self.settings.outage_group)
+        return shared.note_changes(self.history, values, socket.gethostname(), first_seen=first_seen)
+
+    def _on_local_change(self):
+        self._note_shared()
+        self._soon.start(5000)
+
+    def _apply_shared(self, docs: list[dict]):
+        """Take over the sections another install changed more recently than we did."""
+        state = self._note_shared()             # anything changed here during the sync counts first
+        newer = shared.newer_sections(state, docs)
+        if not newer:
+            return
+        changed = [n for n, e in newer.items() if e["value"] != state[n]["value"]]
+        state.update(newer)
+        shared.save_state(self.history, state)
+        if not changed:
+            return
+        if "outage" in changed:
+            v = newer["outage"]["value"]
+            self.settings = replace(self.settings, outage_region=v["region"], outage_group=v["group"])
+            save_settings(self.settings)
+            self.fetch_schedule()
+        rule_parts = {n: newer[n] for n in changed if n != "outage"}
+        if rule_parts:
+            self.engine.set_rules(shared.apply_to_rules(self.engine.rules, rule_parts), local=False)
+        latest = max((newer[n] for n in changed), key=lambda e: e["at"])
+        names = {"rules": "charging rules", "temporary": "temporary rule", "automation": "automation switch",
+                 "outage": "outage region/group"}
+        when = time.strftime("%d.%m %H:%M", time.localtime(latest["at"]))
+        self.settings_synced.emit(f"Updated from {latest['by']} ({when}): " + ", ".join(names[n] for n in changed))
 
     @property
     def fresh(self) -> bool:
@@ -143,12 +196,17 @@ class Controller(QObject):
 
     def _on_schedule_done(self, res):
         self._schedule_busy = False
+        digest = hash(shared.schedule_doc(self.history))
+        if digest != getattr(self, "_schedule_digest", digest):
+            self._soon.start(5000)              # new schedule: pass it on to the other devices
+        self._schedule_digest = digest
         self.schedule_result = res
         self.schedule_status.emit(res.text())
 
     def set_outage_schedule(self, region: str, group: str):
         self.settings = replace(self.settings, outage_region=region, outage_group=group)
         save_settings(self.settings)
+        self._on_local_change()
         if self.schedule_configured:
             self.fetch_schedule()
         else:
@@ -183,11 +241,12 @@ class Controller(QObject):
         if tr is None or self._sync_busy:
             return
         self._sync_busy = True
-        threading.Thread(target=self._sync_worker, args=(tr,), daemon=True, name="ecoflow-sync").start()
+        docs = {shared.SETTINGS_FILE: shared.settings_doc(self._note_shared())}
+        threading.Thread(target=self._sync_worker, args=(tr, docs), daemon=True, name="ecoflow-sync").start()
 
-    def _sync_worker(self, tr):
+    def _sync_worker(self, tr, docs):
         try:
-            res = sync.sync_once(self.history, tr, progress=self.sync_progress.emit)
+            res = sync.sync_once(self.history, tr, progress=self.sync_progress.emit, docs=docs)
         except Exception as e:  # noqa: BLE001 - never let the worker die silently
             res = sync.SyncResult(at=time.time(), error=str(e))
         self.sync_done.emit(res)
@@ -195,6 +254,9 @@ class Controller(QObject):
     def _on_sync_done(self, res):
         self._sync_busy = False
         self.sync_result = res
+        self._apply_shared(res.peer_settings)
+        if res.schedule_rows:
+            self.schedule_status.emit(f"Schedule received from another device ({res.schedule_rows} entries)")
         self.sync_status.emit(res.text())
 
     def _apply_sync_timer(self):
@@ -250,6 +312,8 @@ class Controller(QObject):
         if tr is not None:              # hand over the latest samples before closing
             try:
                 sync.export_new(self.history, tr)
+                sync.publish(self.history, tr, {shared.SETTINGS_FILE: shared.settings_doc(self._note_shared()),
+                                                shared.SCHEDULE_FILE: shared.schedule_doc(self.history)})
             except Exception:  # noqa: BLE001
                 pass
 

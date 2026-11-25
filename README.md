@@ -165,3 +165,30 @@ region and queue (group) in Settings > Outage schedule.
   dashed outlines without fill**, possible outages dotted, days without a saved schedule grey. The real graph has a
   **Compare with schedule** checkbox that overlays the planned outages on the real ones (hover shows both).
 - Half-hour accuracy: the schedule has hourly states plus "first/second 30 minutes". Day keys are Kyiv midnights.
+
+## Shared settings and schedule
+Syncing (folder or GitHub) also carries each install's `settings.json` and `schedule.json`:
+- charging rules, temporary rule, automation on/off and the outage region/group. **The newest change wins** per item;
+  the Control tab shows which device it came from. On the first run the install that saved its rules most recently wins.
+- the fetched outage schedule, so a device whose own fetch is blocked still gets it from another one.
+
+No passwords or tokens are ever written to the store. A change is synced a few seconds after you make it; other
+devices pick it up at their next sync (5 minutes for a folder, 30 minutes for GitHub).
+
+## Android widget
+`android/` is a small Java app with one resizable home-screen widget: battery, charging power, and per day (1, 3 or
+7 days) the real outages with the planned ones under them, plus tomorrow once published.
+
+- **Get the APK:** GitHub > Actions > *android* > latest run > artifact `EcoFlowWidget-apk`. Unzip and open it on the
+  phone (allow installing from that source). Android 8 or newer.
+- **Set up:** open *EcoFlow Widget*, enter the EcoFlow account and serial, the data repository and a fine-grained
+  token for it with **Contents: Read-only**. Then add the widget. Secrets are encrypted with the Android keystore.
+- **Freshness:** every 15 minutes at best (Android may delay it; exclude the app from battery optimisation if it
+  lags). Live values come straight from EcoFlow; history and schedule from the repository (the PC syncs every 30 min).
+  The phone's own readings stay on the phone and cover times when no PC was recording.
+- **Updating without reinstalling** needs a stable signing key, otherwise each build has a new one and Android
+  requires uninstalling first. Create it once and keep the file private:
+  `keytool -genkeypair -keystore release.jks -alias ecoflow -keyalg RSA -keysize 2048 -validity 10000`
+  then add two repository secrets: `ANDROID_KEYSTORE_B64` (the file, base64) and `ANDROID_KEYSTORE_PASSWORD`.
+- The timeline logic is a port of `power.py`; after changing it, update `Segments.java` and run
+  `python tools/make_android_golden.py`.

@@ -139,6 +139,12 @@ class OutageTimeline(QWidget):
             if pen is not None:
                 self._draw_outline(p, self._seg_rect(d, col, s, 2.0), pen)
 
+    def _highlight_planned(self, p: QPainter, i: int, d: DayInfo, col: QRectF):
+        """Solid outline around the planned block under the mouse where nothing real exists yet (the future)."""
+        if not self._hover or self._hover[1] is not None or self._hover[0] != i:
+            return
+        self._draw_outline(p, self._seg_rect(d, col, self._hover[3], 2.0), QPen(QColor(ORANGE), 2.0))
+
     # ------------------------------------------------------------ painting
     def paintEvent(self, _):
         p = QPainter(self)
@@ -176,6 +182,7 @@ class OutageTimeline(QWidget):
                     if pen is not None:
                         self._draw_outline(p, self._seg_rect(d, col, s, 1.5), pen, 5)
             self._draw_overlay(p, i, col)
+            self._highlight_planned(p, i, d, col)
             p.setPen(QPen(QColor("#4a505c" if i == hov_i else "#2f343d"), 1.2))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(col, 8, 8)
@@ -250,6 +257,7 @@ class OutageTimeline(QWidget):
                     p.drawPath(path)
                 self._block_text(p, rect, s, d)
             self._draw_overlay(p, i, col)
+            self._highlight_planned(p, i, d, col)
             if d.start <= self.now < d.end:   # "now" line like a calendar
                 span = d.end - d.start
                 y = col.top() + (self.now - d.start) / span * col.height()
@@ -288,11 +296,22 @@ class OutageTimeline(QWidget):
             p.drawText(QRectF(inner.left(), inner.top(), inner.width(), 16), Qt.AlignLeft | Qt.AlignVCenter,
                        f"{self._title(s)}  {when}")
 
+    def _planned_lines(self, s: Segment, d: DayInfo) -> list[tuple[str, str]]:
+        lines = [(PLAN_TEXT[s.kind][0], ORANGE), (self._range(s, d), TEXT), (fmt_hm(s.seconds), MUTED)]
+        if s.start > self.now:
+            lines.append((f"Starts in {fmt_hm(s.start - self.now)}", MUTED))
+        elif s.end > self.now:
+            lines.append((f"Ends in {fmt_hm(s.end - self.now)} (if on schedule)", MUTED))
+        return lines
+
     def _paint_bubble(self, p: QPainter):
-        if not self._hover or self._hover[1] is None:
+        if not self._hover:
             return
         hi, s, pos, sched = self._hover
         d = self.days[hi]
+        if s is None:
+            self._draw_bubble(p, pos, self._planned_lines(sched, d))
+            return
         name, color = self._texts[s.kind]
         lines = [(s.note or name, color), (self._range(s, d), TEXT)]
         if self.mode == "real" and s.est_seconds > 1:
@@ -314,6 +333,9 @@ class OutageTimeline(QWidget):
             lines.append((f"Schedule: {PLAN_TEXT[sched.kind][0].lower()} {hhmm(sched.start)}–{hhmm(sched.end)}", ORANGE))
         elif self.overlay is not None and self.mode == "real" and s.kind == "outage":
             lines.append(("Schedule: no outage planned", MUTED))
+        self._draw_bubble(p, pos, lines)
+
+    def _draw_bubble(self, p: QPainter, pos: QPointF, lines: list[tuple[str, str]]):
         f = QFont(self.font())
         f.setPointSize(9)
         f.setBold(True)
@@ -344,7 +366,8 @@ class OutageTimeline(QWidget):
                 seg = next((s for s in d.segments if s.start <= t <= s.end), None)
                 if self.overlay and i < len(self.overlay):
                     sched = next((s for s in self.overlay[i].segments if s.start <= t <= s.end), None)
-        self._hover = (i, seg, pos, sched) if seg is not None else None
+        planned_only = seg is None and sched is not None and sched.kind in ("outage", "maybe")   # still in the future
+        self._hover = (i, seg, pos, sched) if seg is not None or planned_only else None
         self.update()
 
     def leaveEvent(self, _):
