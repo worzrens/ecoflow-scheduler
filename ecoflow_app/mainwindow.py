@@ -6,7 +6,8 @@ import time
 from copy import deepcopy
 from datetime import datetime
 
-from PySide6.QtCore import QEvent, QTime, QTimer, Qt
+from PySide6.QtCore import QEvent, QTime, QTimer, QUrl, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QFileDialog, QComboBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMainWindow, QMessageBox, QPushButton, QScrollArea, QSlider, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
@@ -22,7 +23,7 @@ from .rules import MAX_W, MIN_W, Dynamic, RulesConfig, ScheduleEntry, Temporary,
 from .settings import Settings
 from .settings import get_github_token
 from .power import input_breakdown
-from .schedule import BOOKMARKLET, GROUPS, IMPORT_PORT, REGIONS
+from .schedule import BOOKMARKLET, GROUPS, IMPORT_PORT, REGIONS, USERSCRIPT_PATH
 from .sync import coverage, format_coverage
 from .util import fmt_duration
 from .widgets import ActionButton, InfoIcon, SaveButton, ScheduleRow, Stepper, Switch, watts_stepper
@@ -1002,17 +1003,20 @@ class MainWindow(QMainWindow):
         for x in (self.cmb_region, self.cmb_group, b_upd):
             row.addWidget(x)
         v.addLayout(row)
-        how = QLabel("If the site shows a security check and the automatic update fails, open its page in your own browser, "
-                     "pass the check, and send the schedule from there: create a bookmark whose address is the copied code, "
-                     "open the DTEK page and click the bookmark. Or run it, then use Paste from clipboard.")
+        how = QLabel("If the site shows a security check and the automatic update fails, send the schedule from your own "
+                     "browser.\nAutomatic: install the Violentmonkey or Tampermonkey extension, press Install auto-send "
+                     "script once, then just open the DTEK page (pass the check if asked) - the schedule arrives by itself.\n"
+                     "Without an extension: the bookmark button copies the code and opens the page; save the code as a "
+                     "bookmark's address and click it there.")
         how.setObjectName("muted")
         how.setWordWrap(True)
         row2 = FlowLayout(hspacing=10, vspacing=8)
-        b_bm = ActionButton("Copy bookmark code",
-                            on_click=lambda: QApplication.clipboard().setText(BOOKMARKLET % IMPORT_PORT))
+        b_open = ActionButton("Open DTEK page", on_click=self._open_schedule_page)
+        b_script = ActionButton("Install auto-send script", on_click=self._install_userscript)
+        b_bm = ActionButton("Copy bookmark code && open page", on_click=self._copy_bookmark)
         b_paste = ActionButton("Paste from clipboard", on_click=self._paste_schedule)
-        row2.addWidget(b_bm)
-        row2.addWidget(b_paste)
+        for x in (b_open, b_script, b_bm, b_paste):
+            row2.addWidget(x)
         v.addWidget(how)
         v.addLayout(row2)
         self.lbl_sched = QLabel("Choose a region and a group." if not self.ctrl.schedule_configured else "Not updated yet")
@@ -1030,6 +1034,25 @@ class MainWindow(QMainWindow):
         self.lbl_sched.setText("Updating...")
         self.ctrl.fetch_schedule()
         return False                                  # slow: the button ends itself in _on_schedule_status
+
+    def _open_url(self, url: str):
+        if not QDesktopServices.openUrl(QUrl(url)):
+            raise OSError(f"Could not open the browser for {url}")
+
+    def _open_schedule_page(self):
+        region = self.ctrl.settings.outage_region or next(iter(REGIONS))
+        self._open_url(REGIONS[region][1])
+
+    def _install_userscript(self):
+        if not self.ctrl.importer_running:
+            raise OSError(f"The local listener is not running (port {IMPORT_PORT} is busy)")
+        self._open_url(f"http://127.0.0.1:{IMPORT_PORT}{USERSCRIPT_PATH}")
+        self.lbl_sched.setText("The browser should offer to install the script. If it only shows the code, "
+                               "the Violentmonkey / Tampermonkey extension is missing or disabled.")
+
+    def _copy_bookmark(self):
+        QApplication.clipboard().setText(BOOKMARKLET % IMPORT_PORT)
+        self._open_schedule_page()
 
     def _paste_schedule(self):
         try:

@@ -98,7 +98,7 @@ def fetch(region: str, session=None) -> ScheduleData:
         raise ScheduleError(f"The site answered HTTP {r.status_code}")
     html = r.content.decode("utf-8", "replace")
     if "DisconSchedule.fact" not in html and ("Incapsula" in html or "_Incap" in html):
-        raise Blocked("The site asks for a human check (bot protection) - use 'Send from browser' below.")
+        raise Blocked("The site asks for a human check (bot protection) - open the page in your browser (buttons below).")
     return parse_page(html)
 
 
@@ -111,6 +111,71 @@ BOOKMARKLET = (
     "alert('The browser blocked sending to the app. Schedule copied instead: in the app press Paste from clipboard.')}"
     "catch(_){prompt('Copy this, then paste it in the app:',t.slice(0,100000))}}})()")
 IMPORT_PORT = 47321
+USERSCRIPT_PATH = "/ecoflow-dtek.user.js"
+
+# Installed once in Tampermonkey / Violentmonkey: runs on every visit of the DTEK page and hands the schedule to the app.
+# GM_xmlhttpRequest is sent by the extension, so the browser's cross-site / local-network blocking does not apply.
+USERSCRIPT = r"""// ==UserScript==
+// @name         EcoFlow Scheduler - send the DTEK outage schedule
+// @namespace    ecoflow-scheduler
+// @version      1.0
+// @description  Sends the schedule shown on this page to the EcoFlow Scheduler app on this computer.
+// @match        https://www.dtek-oem.com.ua/*
+// @match        https://dtek-oem.com.ua/*
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      127.0.0.1
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
+(function () {
+  'use strict';
+  if (!location.pathname.includes('shutdowns')) return;
+
+  function find() {
+    // 1) the inline script that carries the data
+    for (const s of document.scripts) {
+      if (/DisconSchedule\.fact\s*=/.test(s.textContent)) return s.textContent;
+    }
+    // 2) the live page variable
+    try {
+      const t = unsafeWindow.eval("typeof DisconSchedule !== 'undefined' && DisconSchedule.fact ? JSON.stringify(DisconSchedule.fact) : ''");
+      if (t) return t;
+    } catch (e) { /* the page forbids eval */ }
+    return '';
+  }
+
+  function toast(text, ok) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    d.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:420px;padding:12px 16px;' +
+      'border-radius:10px;font:14px sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.35);background:#17191e;color:' +
+      (ok ? '#2ee68a' : '#ff8a80');
+    document.body.appendChild(d);
+    setTimeout(() => d.remove(), 8000);
+  }
+
+  let tries = 0;
+  (function attempt() {
+    const body = find();
+    if (!body) {
+      // a security check page never has data: stay quiet there, the script runs again once the real page loads
+      if (++tries < 20) setTimeout(attempt, 1000);
+      else if (document.getElementById('discon_form')) toast('EcoFlow Scheduler: no schedule found on this page', false);
+      return;
+    }
+    GM_xmlhttpRequest({
+      method: 'POST',
+      url: 'http://127.0.0.1:__PORT__/schedule',
+      data: body,
+      timeout: 10000,
+      onload: r => toast('EcoFlow Scheduler: ' + r.responseText, r.status === 200),
+      onerror: () => toast('EcoFlow Scheduler is not running on this computer', false),
+      ontimeout: () => toast('EcoFlow Scheduler did not answer', false)
+    });
+  })();
+})();
+""".replace("__PORT__", str(IMPORT_PORT))
 
 
 # ---------------------------------------------------------------- hours -> segments

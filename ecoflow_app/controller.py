@@ -70,7 +70,8 @@ class Controller(QObject):
         self._schedule_timer.start(schedule.FETCH_EVERY * 1000)
         QTimer.singleShot(20000, self.fetch_schedule)
         self._blocked_until = 0.0         # after a bot-protection answer the automatic fetch pauses
-        self._import_server = importer.start(schedule.IMPORT_PORT, self.import_schedule)   # 'Send from browser'
+        self._import_server = importer.start(schedule.IMPORT_PORT, self.import_schedule,       # from the user's browser
+                                             {schedule.USERSCRIPT_PATH: schedule.USERSCRIPT})
 
     # ---- shared settings
     def _file_times(self) -> dict:
@@ -116,6 +117,10 @@ class Controller(QObject):
                  "outage": "outage region/group"}
         when = time.strftime("%d.%m %H:%M", time.localtime(latest["at"]))
         self.settings_synced.emit(f"Updated from {latest['by']} ({when}): " + ", ".join(names[n] for n in changed))
+
+    @property
+    def importer_running(self) -> bool:
+        return self._import_server is not None
 
     @property
     def fresh(self) -> bool:

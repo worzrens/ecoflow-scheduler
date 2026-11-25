@@ -175,6 +175,15 @@ Syncing (folder or GitHub) also carries each install's `settings.json` and `sche
 No passwords or tokens are ever written to the store. A change is synced a few seconds after you make it; other
 devices pick it up at their next sync (5 minutes for a folder, 30 minutes for GitHub).
 
+### When DTEK blocks the automatic fetch
+Settings > Outage schedule can take the schedule from your own browser (the app listens on `127.0.0.1:47321` only):
+- **Automatic:** install Violentmonkey or Tampermonkey, press **Install auto-send script** once. From then on every
+  visit of the DTEK page sends the schedule to the running app. (Chrome: Tampermonkey also needs *Allow user scripts*.)
+- **Bookmark:** **Copy bookmark code & open page**, save the code as a bookmark's address, click it on that page.
+  If the browser blocks sending, the schedule is copied instead - use **Paste from clipboard**.
+
+The app does not reload the page or pass the site's security check for you.
+
 ## Android widget
 `android/` is a small Java app with one resizable home-screen widget: battery, charging power, and per day (1, 3 or
 7 days) the real outages with the planned ones under them, plus tomorrow once published.

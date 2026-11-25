@@ -12,15 +12,17 @@ from typing import Callable
 MAX_BODY = 4_000_000
 
 
-def start(port: int, handle: Callable[[str], str]) -> ThreadingHTTPServer | None:
+def start(port: int, handle: Callable[[str], str],
+          files: dict[str, str] | None = None) -> ThreadingHTTPServer | None:
     """`handle(text)` returns the reply text (raises OSError/ValueError with a readable message on bad input).
+    `files` {path: javascript text} are served on GET (the userscript to install in the browser).
     Returns None when the port is taken (a second instance); the first one keeps listening."""
 
     class H(BaseHTTPRequestHandler):
-        def _send(self, code: int, text: str):
+        def _send(self, code: int, text: str, kind: str = "text/plain"):
             body = text.encode("utf-8")
             self.send_response(code)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", f"{kind}; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -33,6 +35,9 @@ def start(port: int, handle: Callable[[str], str]) -> ThreadingHTTPServer | None
             self._send(204, "")
 
         def do_GET(self):
+            script = (files or {}).get(self.path.split("?")[0])
+            if script is not None:
+                return self._send(200, script, "text/javascript")
             self._send(200, "EcoFlow Scheduler is listening")
 
         def do_POST(self):
