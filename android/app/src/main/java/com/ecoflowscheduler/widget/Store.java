@@ -22,6 +22,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 /** Settings, secrets (encrypted with a key that never leaves the Android keystore) and the phone's own readings. */
 final class Store {
@@ -48,6 +49,15 @@ final class Store {
 
     void setRange(int widgetId, int days) {
         prefs.edit().putInt("range" + widgetId, days).apply();
+    }
+
+    /** 3 day view: how many days back the widget shows. Starts at today again on a new day. */
+    int dayBack(int widgetId, long today) {
+        return prefs.getLong("dayOn" + widgetId, 0) == today ? prefs.getInt("dayBack" + widgetId, 0) : 0;
+    }
+
+    void setDayBack(int widgetId, int back, long today) {
+        prefs.edit().putInt("dayBack" + widgetId, back).putLong("dayOn" + widgetId, today).apply();
     }
 
     boolean configured() {
@@ -120,6 +130,26 @@ final class Store {
         return rows;
     }
 
+    private static Object num(double v) {
+        return Double.isNaN(v) ? JSONObject.NULL : (Object) v;
+    }
+
+    void forget(String... keys) {
+        SharedPreferences.Editor e = prefs.edit();
+        for (String k : keys) e.remove(k);
+        e.apply();
+    }
+
+    /** Drop the downloaded repository files (on disconnect). */
+    void clearRepoCache() {
+        File[] files = blobDir().listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+        }
+    }
+
     synchronized void addLive(Segments.Row r) throws IOException, JSONException {
         long cutoff = r.ts - 8 * 86400L;
         List<String> lines = new ArrayList<>();
@@ -127,8 +157,8 @@ final class Store {
         rows.add(r);
         for (Segments.Row x : rows) {
             if (x.ts < cutoff) continue;
-            lines.add(new JSONArray().put(x.ts).put(x.soc).put(x.in).put(x.out).put(x.acIn).put(x.acOut)
-                    .put(x.limit).put(x.temp).put(x.grid).toString());
+            lines.add(new JSONArray().put(x.ts).put(num(x.soc)).put(x.in).put(x.out).put(x.acIn).put(x.acOut)
+                    .put(x.limit).put(x.temp).put(x.grid).put(num(x.chgMin)).put(num(x.dsgMin)).toString());
         }
         Files.write(liveFile().toPath(), lines, StandardCharsets.UTF_8);
     }

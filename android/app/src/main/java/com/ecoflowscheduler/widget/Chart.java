@@ -3,9 +3,11 @@ package com.ecoflowscheduler.widget;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -15,8 +17,9 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * One row per day, midnight to midnight: the thick bar is what really happened (green = electricity, red = none,
- * grey = no data), the thin bar under it is the planned schedule (orange = outage, faded = possible).
+ * The widget's graphs, midnight to midnight. draw(): one row per day - the thick bar is what really happened
+ * (green = electricity, red = none, grey = no data), the thin bar under it the planned schedule. drawDay(): one day
+ * top to bottom, with the planned outages as dashed outlines over what really happened.
  */
 final class Chart {
     private static final int GREEN = Color.rgb(0x2e, 0xe6, 0x8a), RED = Color.rgb(0xe5, 0x53, 0x4b),
@@ -37,7 +40,7 @@ final class Chart {
     private Chart() {
     }
 
-    private static long midnight(long nowSec, int offsetDays) {
+    static long midnight(long nowSec, int offsetDays) {
         Calendar c = Calendar.getInstance();
         c.setTimeInMillis(nowSec * 1000);
         c.set(Calendar.HOUR_OF_DAY, 0);
@@ -84,6 +87,115 @@ final class Chart {
     static String duration(double seconds) {
         long min = Math.round(seconds / 60);
         return min >= 60 ? String.format(Locale.ROOT, "%dh %02dm", min / 60, min % 60) : min + "m";
+    }
+
+    private static String clock(double ts) {
+        return new SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date((long) ts * 1000));
+    }
+
+    private static String clockEnd(double end, Day d) {
+        return end >= d.end - 1 ? "24:00" : clock(end);
+    }
+
+    static Bitmap drawDay(Day d, int width, int height, float density, long now) {
+        Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bmp);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Typeface bold = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
+        float gutter = 32 * density, top = 6 * density, h = height - 12 * density;
+        float gx = gutter, gw = width - gutter;
+        double span = d.end - d.start;
+
+        int step = h >= 200 * density ? 3 : 6;
+        p.setTextSize(9 * density);
+        p.setTextAlign(Paint.Align.RIGHT);
+        for (int hour = 0; hour <= 24; hour += step) {
+            float y = top + h * hour / 24f;
+            p.setColor(Color.rgb(0x26, 0x2a, 0x31));
+            c.drawRect(gx, y, width, y + Math.max(1, density * 0.7f), p);
+            p.setColor(MUTED);
+            c.drawText(String.format(Locale.ROOT, "%02d:00", hour), gutter - 4 * density, y + 3.2f * density, p);
+        }
+
+        p.setTextAlign(Paint.Align.LEFT);
+        for (Segments.Seg s : d.real) {
+            float y0 = top + (float) ((s.start - d.start) / span) * h + density;
+            float y1 = top + (float) ((s.end - d.start) / span) * h - density;
+            RectF b = new RectF(gx + 3 * density, y0, width - 3 * density, Math.max(y1, y0 + 2 * density));
+            float radius = Math.min(6 * density, b.height() / 2);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(s.kind == Segments.GRID ? GREEN : (s.kind == Segments.OUTAGE ? Color.rgb(0x3a, 0x1f, 0x23) : EMPTY));
+            c.drawRoundRect(b, radius, radius, p);
+            if (s.kind == Segments.OUTAGE) {
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(1.2f * density);
+                p.setColor(Color.rgb(0xb4, 0x49, 0x4f));
+                c.drawRoundRect(b, radius, radius, p);
+                p.setStyle(Paint.Style.FILL);
+            }
+            String name = s.kind == Segments.GRID ? "Electricity" : (s.kind == Segments.OUTAGE ? "No electricity" : "No data");
+            int ink = s.kind == Segments.GRID ? Color.rgb(0x06, 0x26, 0x0f)
+                    : (s.kind == Segments.OUTAGE ? Color.rgb(0xf8, 0x71, 0x71) : MUTED);
+            String times = clock(s.start) + "–" + clockEnd(s.end, d);
+            c.save();
+            c.clipRect(b);
+            p.setColor(ink);
+            float x = b.left + 7 * density;
+            if (b.height() >= 28 * density) {
+                p.setTypeface(bold);
+                p.setTextSize(11 * density);
+                c.drawText(name + "  ·  " + duration(s.seconds()), x, b.top + 12.5f * density, p);
+                p.setTypeface(Typeface.DEFAULT);
+                p.setTextSize(9 * density);
+                String battery = "";
+                if (s.kind != Segments.NODATA && !Double.isNaN(s.socStart) && !Double.isNaN(s.socEnd)) {
+                    battery = "   " + (s.est.isEmpty() ? "" : "~") + Math.round(s.socStart) + "→" + Math.round(s.socEnd) + "%";
+                }
+                c.drawText(times + battery, x, b.top + 24 * density, p);
+            } else if (b.height() >= 12 * density) {
+                p.setTypeface(bold);
+                p.setTextSize(9 * density);
+                c.drawText(name + "  " + times, x, b.centerY() + 3.2f * density, p);
+                p.setTypeface(Typeface.DEFAULT);
+            }
+            c.restore();
+        }
+
+        for (Segments.Seg s : d.planned) {
+            if (s.kind != Segments.OUTAGE && s.kind != Segments.MAYBE) continue;
+            RectF q = new RectF(gx + density, top + (float) ((s.start - d.start) / span) * h,
+                    width - density, top + (float) ((s.end - d.start) / span) * h);
+            boolean sure = s.kind == Segments.OUTAGE;
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(1.7f * density);
+            p.setColor(ORANGE);
+            p.setPathEffect(new DashPathEffect(sure ? new float[]{6 * density, 4 * density}
+                    : new float[]{2 * density, 4 * density}, 0));
+            c.drawRoundRect(q, 7 * density, 7 * density, p);
+            p.setPathEffect(null);
+            p.setStyle(Paint.Style.FILL);
+            if (q.height() >= 28 * density) {            // enough room not to cover the block's own text
+                String tag = (sure ? "planned " : "possible ") + clock(s.start) + "–" + clockEnd(s.end, d);
+                p.setTypeface(bold);
+                p.setTextSize(8 * density);
+                float tw = p.measureText(tag) + 10 * density;
+                RectF chip = new RectF(q.right - tw - 5 * density, q.bottom - 14 * density,
+                        q.right - 5 * density, q.bottom - 2 * density);
+                p.setColor(Color.rgb(0x3b, 0x2c, 0x10));
+                c.drawRoundRect(chip, 5 * density, 5 * density, p);
+                p.setColor(ORANGE);
+                c.drawText(tag, chip.left + 5 * density, chip.bottom - 3.2f * density, p);
+                p.setTypeface(Typeface.DEFAULT);
+            }
+        }
+
+        if (now >= d.start && now < d.end) {
+            float y = top + (float) ((now - d.start) / span) * h;
+            p.setColor(Color.WHITE);
+            c.drawRect(gx - 2 * density, y - 0.7f * density, width, y + 0.7f * density, p);
+            c.drawCircle(gx - density, y, 3 * density, p);
+        }
+        return bmp;
     }
 
     static Bitmap draw(Model m, int width, int height, float density, long now) {

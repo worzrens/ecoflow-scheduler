@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'">
+<title>EcoFlow</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>DELTA Pro</h1>
+  <div id="status"><i class="dot"></i><span>Loading…</span></div>
+</header>
+
+<main>
+  <!-- Dashboard -->
+  <section id="tab-dashboard" class="tab">
+    <div class="grid">
+      <article class="card span2" id="c-battery">
+        <div class="row between muted"><span>Battery time remaining</span><span id="temp"></span></div>
+        <div class="hero" id="remain">--</div>
+        <div class="row gap"><span class="chip" id="state">No data</span><span class="muted" id="since"></span></div>
+        <div class="battery"><div id="bat-fill"></div><span id="bat-text">--</span></div>
+        <div class="row between muted small"><span>Discharge limit 0%</span><span>Charge limit 100%</span></div>
+      </article>
+
+      <article class="card span2" id="c-input">
+        <div class="split">
+          <div>
+            <div class="muted"><i class="mark green"></i><span id="in-title">Input</span></div>
+            <div class="stat" id="in-value">-- W</div>
+            <div class="small muted" id="in-sub"></div>
+          </div>
+          <div class="right" id="in-right">
+            <div class="muted" id="limit-caption">Limit</div>
+            <div class="stat" id="limit-value">-- W</div>
+            <div class="small muted" id="limit-sub"></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card span2" id="c-output">
+        <div class="muted"><i class="mark orange"></i>Output</div>
+        <div class="stat" id="out-value">-- W</div>
+        <div class="small muted" id="acout"></div>
+      </article>
+
+      <article class="card span2">
+        <div class="muted" id="dash-caption">Energy used</div>
+        <div class="row baseline gap"><span class="big" id="dash-value">--</span><span class="muted small" id="dash-sub"></span></div>
+        <div class="chips" id="dash-range"></div>
+        <div class="legend"><span><i class="mark green"></i>Input</span><span><i class="mark orange"></i>Output</span></div>
+        <canvas id="dash-chart" class="chart"></canvas>
+      </article>
+    </div>
+  </section>
+
+  <!-- Statistics -->
+  <section id="tab-statistics" class="tab" hidden>
+    <div class="grid">
+      <article class="card">
+        <div class="muted">Time without electricity</div>
+        <div class="row baseline gap"><span class="big" id="real-value">--</span></div>
+        <div class="muted small" id="real-sub"></div>
+        <div class="row between wrap gap">
+          <div class="chips" id="real-range"></div>
+          <label class="check"><input type="checkbox" id="compare" checked> Compare with schedule</label>
+        </div>
+        <div class="legend" id="real-legend"></div>
+        <canvas id="real-chart" class="timeline"></canvas>
+      </article>
+
+      <article class="card">
+        <div class="muted">Expected outages (schedule)</div>
+        <div class="row baseline gap"><span class="big" id="plan-value">--</span></div>
+        <div class="muted small" id="plan-sub"></div>
+        <div class="chips" id="plan-range"></div>
+        <div class="legend"><span><i class="mark box orange-line"></i>Planned</span><span><i class="mark box dotted"></i>Possible</span><span><i class="mark box none"></i>No schedule</span></div>
+        <canvas id="plan-chart" class="timeline"></canvas>
+      </article>
+
+      <article class="card">
+        <div class="muted" id="power-caption">Statistic</div>
+        <div class="row baseline gap"><span class="big" id="power-value">--</span><span class="muted small" id="power-sub"></span></div>
+        <div class="row between wrap gap">
+          <div class="chips" id="power-range"></div>
+          <div class="chips" id="power-which" hidden></div>
+        </div>
+        <canvas id="power-chart" class="chart"></canvas>
+        <canvas id="power-bars" class="chart" hidden></canvas>
+      </article>
+
+      <article class="card">
+        <div class="muted" id="soc-caption">Battery level</div>
+        <div class="row baseline gap"><span class="big" id="soc-value">--</span><span class="muted small" id="soc-sub"></span></div>
+        <div class="chips" id="soc-range"></div>
+        <canvas id="soc-chart" class="chart"></canvas>
+      </article>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tab" hidden>
+    <div class="grid">
+      <article class="card">
+        <h2>EcoFlow account</h2>
+        <div class="summary" id="acc-summary" hidden>
+          <div class="kv"><b>Account</b><span id="acc-line"></span></div>
+          <div class="small muted" id="acc-status"></div>
+          <div class="row gap wrap">
+            <button data-edit="account">Edit credentials</button>
+            <button class="danger" data-forget="account">Sign out</button>
+          </div>
+        </div>
+        <form id="acc-form" autocomplete="off">
+          <p class="muted small">Live battery and charging power, straight from EcoFlow.</p>
+          <label>E-mail<input id="email" type="email" autocapitalize="off" spellcheck="false"></label>
+          <label>Password<input id="password" type="password"></label>
+          <label>Serial number of the unit<input id="sn" type="text" autocapitalize="characters" spellcheck="false"></label>
+          <label>Server<input id="host" type="text" autocapitalize="off" spellcheck="false" placeholder="api-e.ecoflow.com"></label>
+          <div class="row gap wrap">
+            <button class="primary" type="submit" id="acc-connect">Connect</button>
+            <button type="button" id="acc-cancel" data-cancel="account" hidden>Cancel</button>
+          </div>
+          <div class="msg" id="acc-msg"></div>
+        </form>
+      </article>
+
+      <article class="card">
+        <h2>Data repository</h2>
+        <div class="summary" id="repo-summary" hidden>
+          <div class="kv"><b>Repository</b><span id="repo-line"></span></div>
+          <div class="small muted" id="repo-status"></div>
+          <div class="row gap wrap">
+            <button data-edit="repo">Edit connection</button>
+            <button id="sync-now">Sync now</button>
+            <button class="danger" data-forget="repo">Disconnect</button>
+          </div>
+        </div>
+        <form id="repo-form" autocomplete="off">
+          <p class="muted small">History and the outage schedule, from the private repository your computers sync to. A read-only token is enough.</p>
+          <label>Repository (owner/name)<input id="repo" type="text" autocapitalize="off" spellcheck="false"></label>
+          <label>Token<input id="token" type="password"></label>
+          <div class="row gap wrap">
+            <button class="primary" type="submit" id="repo-connect">Connect</button>
+            <button type="button" id="repo-cancel" data-cancel="repo" hidden>Cancel</button>
+          </div>
+          <div class="msg" id="repo-msg"></div>
+        </form>
+      </article>
+
+      <article class="card">
+        <h2>Widget</h2>
+        <p class="muted small">Add it from your home screen's widget list. It refreshes about every 15 minutes (Android may delay it - exclude the app from battery optimisation if it lags).</p>
+      </article>
+    </div>
+  </section>
+</main>
+
+<nav>
+  <button data-tab="dashboard" class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Dashboard</button>
+  <button data-tab="statistics"><svg viewBox="0 0 24 24"><path d="M4 20V10h3v10zm6.5 0V4h3v16zM17 20v-7h3v7z"/></svg>Statistics</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24"><path d="M4 7h10v2H4zm13-2h2v6h-2zM10 15h10v2H10zM5 13h2v6H5z"/></svg>Settings</button>
+</nav>
+
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

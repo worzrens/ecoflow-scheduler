@@ -16,3 +16,4 @@ android/build/
 android/app/build/
 *.jks
 *.keystore
+design/

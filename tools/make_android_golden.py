@@ -10,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecoflow_app.power import drop_stale_samples, fill_gaps, grid_segments, link_battery, merge_same_kind  # noqa: E402
+from ecoflow_app.power import (drop_stale_samples, fill_gaps, grid_segments, link_battery, merge_same_kind,  # noqa: E402
+                               state_since)
 from ecoflow_app.schedule import day_segments  # noqa: E402
 
 OUT = ROOT / "android" / "app" / "src" / "test" / "resources" / "golden.json"
@@ -48,7 +49,9 @@ def build() -> dict:
         t0, t1 = 1_000_000 + 500, 1_000_000 + 86_400
         now = rows[-1][0] + (60 if seed % 2 else 5000)
         segs = link_battery(merge_same_kind(fill_gaps(grid_segments(drop_stale_samples(rows), t0, t1, now))))
-        history.append({"rows": [list(r) for r in rows], "t0": t0, "t1": t1, "now": now, "segments": pack(segs)})
+        part = rows[:len(rows) * seed // 6]                      # different end points -> different current states
+        history.append({"rows": [list(r) for r in rows], "t0": t0, "t1": t1, "now": now, "segments": pack(segs),
+                        "state_rows": len(part), "state": list(state_since(part))})
     hours = "YYNNFSMGHYYNNNYYMMSFYYNY"
     day = 1_795_000_000
     return {"history": history, "schedule": {"day": day, "hours": hours, "segments": pack(day_segments(day, hours), False)}}

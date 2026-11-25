@@ -60,6 +60,9 @@ public class SegmentsTest {
                 r.src = a.getString(9);
                 list.add(r);
             }
+            Segments.State state = Segments.stateSince(list.subList(0, k.getInt("state_rows")));
+            assertEquals("case " + c + " state", k.getJSONArray("state").getString(0), state.name);
+            assertEquals("case " + c + " since", k.getJSONArray("state").getLong(1), state.since);
             same("case " + c, k.getJSONArray("segments"),
                     Segments.real(list, k.getDouble("t0"), k.getDouble("t1"), k.getDouble("now")));
         }

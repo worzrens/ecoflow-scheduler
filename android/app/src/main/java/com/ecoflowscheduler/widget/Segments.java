@@ -27,6 +27,7 @@ public final class Segments {
         public long ts;
         public double soc = Double.NaN, in, out, acIn, acOut, limit, temp;
         public int grid = -1;          // 1 mains, 0 none, -1 unknown
+        public double chgMin = Double.NaN, dsgMin = Double.NaN;   // time estimates, only in the phone's own readings
         public String src = "";
 
         boolean mains() {
@@ -117,6 +118,35 @@ public final class Segments {
             kept.add(r);
         }
         return kept;
+    }
+
+    /** 'charging' | 'discharging' | 'full' | 'ongrid'; `prev` adds hysteresis (see power.state_of). */
+    public static String stateOf(double soc, double in, double out, boolean mains, String prev) {
+        double net = in - out;
+        if (!mains) return net > 3 ? "charging" : "discharging";
+        if (soc >= 99.5 || ("full".equals(prev) && soc >= 98)) return net >= -3 ? "full" : "discharging";
+        if (net > 3 || ("charging".equals(prev) && net > 0)) return "charging";
+        if (net < -3) return "discharging";
+        return "ongrid";
+    }
+
+    public static final class State {
+        public String name;
+        public long since;
+    }
+
+    /** Current state and when the current run started; null for no rows. */
+    public static State stateSince(List<Row> rows) {
+        State s = null;
+        for (Row r : rows) {
+            String name = stateOf(Double.isNaN(r.soc) ? 0 : r.soc, r.in, r.out, r.mains(), s == null ? null : s.name);
+            if (s == null || !name.equals(s.name)) {
+                s = new State();
+                s.name = name;
+                s.since = r.ts;
+            }
+        }
+        return s;
     }
 
     private static double lerp(double t0, double t1, double v0, double v1, double t) {

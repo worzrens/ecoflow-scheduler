@@ -63,7 +63,11 @@ final class Repo {
 
     /** Download what changed. Throws IOException with a readable message. */
     static void sync(Store store) throws IOException, JSONException {
-        String repo = store.get("repo", ""), token = store.secret("token");
+        sync(store, store.get("repo", ""), store.secret("token"), store.get("sn", ""));
+    }
+
+    /** Same, with values that are not saved yet (used to verify them before saving). */
+    static synchronized void sync(Store store, String repo, String token, String sn) throws IOException, JSONException {
         Http.Reply r = Http.send("GET", API + repo + "/git/trees/HEAD?recursive=1",
                 headers(token, "application/vnd.github+json"), null);
         if (r.code == 401) throw new IOException("GitHub rejected the token");
@@ -73,7 +77,7 @@ final class Repo {
         SimpleDateFormat day = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);
         day.setTimeZone(TimeZone.getTimeZone("UTC"));
         String cutoff = day.format(new Date(System.currentTimeMillis() - KEEP_DAYS * 86400000L));
-        String prefix = "ecoflow-history/" + safe(store.get("sn", "")) + "/";
+        String prefix = "ecoflow-history/" + safe(sn) + "/";
 
         JSONArray tree = new JSONObject(r.text()).getJSONArray("tree");
         JSONObject wanted = new JSONObject();          // path -> sha
@@ -144,6 +148,8 @@ final class Repo {
             r.limit = a.optDouble(6, 0);
             r.temp = a.optDouble(7, 0);
             r.grid = a.isNull(8) ? -1 : a.optInt(8, -1);
+            r.chgMin = a.optDouble(9, Double.NaN);
+            r.dsgMin = a.optDouble(10, Double.NaN);
             r.src = src;
             return r;
         } catch (JSONException e) {

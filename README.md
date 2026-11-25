@@ -185,13 +185,22 @@ Settings > Outage schedule can take the schedule from your own browser (the app 
 The app does not reload the page or pass the site's security check for you.
 
 ## Android widget
-`android/` is a small Java app with one resizable home-screen widget: battery, charging power, and per day (1, 3 or
-7 days) the real outages with the planned ones under them, plus tomorrow once published.
+`android/` is a small Java app with one resizable home-screen widget (about 4x4 cells):
+- top line: battery, state and **Input / Charging / Output / Limit** (as on the desktop's input card)
+- **1d** today as a vertical timeline with planned outages as dashed outlines; **3d** the same, one day at a time,
+  moving with the side arrows (Android keeps sideways swipes for home-screen pages); **7d** one row per day with
+  the planned outages under it (plus tomorrow once published).
 
-- **Get the APK:** GitHub > Actions > *android* > latest run > artifact `EcoFlowWidget-apk`. Unzip and open it on the
+- **Get the APK:** GitHub > Actions > *android* > latest run > artifact `EcoFlowWidget-<run number>.apk` (a plain APK, no unzipping). Open it on the
   phone (allow installing from that source). Android 8 or newer.
-- **Set up:** open *EcoFlow Widget*, enter the EcoFlow account and serial, the data repository and a fine-grained
-  token for it with **Contents: Read-only**. Then add the widget. Secrets are encrypted with the Android keystore.
+- **The app** (also opened by tapping the widget): *Dashboard* (live battery, charging, output, energy graph),
+  *Statistics* (real and planned outages, power and battery graphs - tap or drag on a graph for details) and
+  *Settings*. It only monitors; rules are changed on a computer. While open it reads the unit every few seconds.
+- **Set up:** in *Settings* connect the EcoFlow account (with the serial number), then the data repository with a
+  fine-grained token for it (**Contents: Read-only**). Each connection is checked before it is saved. Then add the
+  widget. Secrets are encrypted with the Android keystore.
+- The screens are a bundled page (`android/app/src/main/assets/app`) drawn from `Model.java`'s data; it loads
+  nothing from the network.
 - **Freshness:** every 15 minutes at best (Android may delay it; exclude the app from battery optimisation if it
   lags). Live values come straight from EcoFlow; history and schedule from the repository (the PC syncs every 30 min).
   The phone's own readings stay on the phone and cover times when no PC was recording.

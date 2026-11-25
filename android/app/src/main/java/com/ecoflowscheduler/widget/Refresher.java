@@ -12,7 +12,7 @@ final class Refresher {
         StringBuilder problems = new StringBuilder();
         if (store.liveConfigured()) {
             try {
-                store.addLive(EcoFlow.read(store.get("host", "api-e.ecoflow.com"), store.get("email", ""),
+                store.addLive(EcoFlow.readOnce(store.get("host", "api-e.ecoflow.com"), store.get("email", ""),
                         store.secret("password"), store.get("sn", "")));
                 store.put("liveError", "");
             } catch (Exception e) {      // any failure is shown to the user, the cached data stays
