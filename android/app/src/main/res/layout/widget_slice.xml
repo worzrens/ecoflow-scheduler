@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- three hours of the vertical day view -->
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/slice"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:adjustViewBounds="true"
+    android:contentDescription="@string/widget_description"
+    android:scaleType="fitCenter" />

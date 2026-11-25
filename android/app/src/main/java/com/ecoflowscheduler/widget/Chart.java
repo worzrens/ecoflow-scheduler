@@ -97,19 +97,26 @@ final class Chart {
         return end >= d.end - 1 ? "24:00" : clock(end);
     }
 
-    static Bitmap drawDay(Day d, int width, int height, float density, long now) {
+    /** The day shown by the 1 day (today) and 3 day (today or up to two days back) views. */
+    static Day selected(Model m, int days, int back) {
+        int shown = days == 3 ? Math.max(0, Math.min(2, back)) : 0;
+        return m.days.get(days - 1 - shown);
+    }
+
+    /** The whole day, top to bottom; every 3 hours take `slicePx` pixels (see DayView). */
+    static Bitmap drawDay(Day d, int width, int slicePx, float density, long now) {
+        int height = DayView.SLICES * slicePx + Math.round(2 * DayView.PAD_DP * density);
         Bitmap bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         Typeface bold = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
-        float gutter = 32 * density, top = 6 * density, h = height - 12 * density;
+        float gutter = 32 * density, top = DayView.PAD_DP * density, h = DayView.SLICES * slicePx;
         float gx = gutter, gw = width - gutter;
         double span = d.end - d.start;
 
-        int step = h >= 200 * density ? 3 : 6;
         p.setTextSize(9 * density);
         p.setTextAlign(Paint.Align.RIGHT);
-        for (int hour = 0; hour <= 24; hour += step) {
+        for (int hour = 0; hour <= 24; hour += 3) {
             float y = top + h * hour / 24f;
             p.setColor(Color.rgb(0x26, 0x2a, 0x31));
             c.drawRect(gx, y, width, y + Math.max(1, density * 0.7f), p);

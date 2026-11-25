@@ -7,6 +7,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.SpannableString;
 import android.text.Spanned;
@@ -26,14 +27,26 @@ public class WidgetProvider extends AppWidgetProvider {
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager manager, int[] ids) {
-        inBackground(() -> renderAll(ctx));
+        inBackground(() -> {
+            renderAll(ctx);
+            // a new widget starts at the current time; later refreshes keep the position the user scrolled to
+            Store store = new Store(ctx);
+            for (int id : ids) {
+                if (!store.get("scrolled" + id, "").isEmpty()) continue;
+                scrollToNow(ctx, id);
+                store.put("scrolled" + id, "1");
+            }
+        });
         RefreshJob.schedulePeriodic(ctx);
         RefreshJob.refreshNow(ctx);
     }
 
     @Override
     public void onAppWidgetOptionsChanged(Context ctx, AppWidgetManager manager, int id, Bundle options) {
-        inBackground(() -> renderAll(ctx));
+        inBackground(() -> {
+            renderAll(ctx);
+            scrollToNow(ctx, id);
+        });
     }
 
     @Override
@@ -48,11 +61,18 @@ public class WidgetProvider extends AppWidgetProvider {
             int id = intent.getIntExtra("id", 0);
             store.setRange(id, intent.getIntExtra("value", 3));
             store.setDayBack(id, 0, Chart.midnight(System.currentTimeMillis() / 1000, 0));
-            inBackground(() -> renderAll(ctx));
+            inBackground(() -> {
+                renderAll(ctx);
+                scrollToNow(ctx, id);
+            });
         } else if (DAY.equals(intent.getAction())) {
-            new Store(ctx).setDayBack(intent.getIntExtra("id", 0), intent.getIntExtra("value", 0),
+            int id = intent.getIntExtra("id", 0);
+            new Store(ctx).setDayBack(id, intent.getIntExtra("value", 0),
                     Chart.midnight(System.currentTimeMillis() / 1000, 0));
-            inBackground(() -> renderAll(ctx));
+            inBackground(() -> {
+                renderAll(ctx);
+                scrollToNow(ctx, id);
+            });
         } else if (REFRESH.equals(intent.getAction())) {
             RefreshJob.schedulePeriodic(ctx);
             RefreshJob.refreshNow(ctx);
@@ -79,6 +99,25 @@ public class WidgetProvider extends AppWidgetProvider {
         Store store = new Store(ctx);
         Repo.Data data = Repo.load(store);
         for (int id : ids) manager.updateAppWidget(id, views(ctx, manager, store, data, id));
+        manager.notifyAppWidgetViewDataChanged(ids, R.id.list);          // the day list redraws itself (DayService)
+    }
+
+    /** Move the day list to the current time (a past day: to its start). */
+    private static void scrollToNow(Context ctx, int id) {
+        Store store = new Store(ctx);
+        int days = store.range(id);
+        if (days == 7) return;
+        try {
+            Thread.sleep(700);                    // the list has to receive its items before it can be scrolled
+        } catch (InterruptedException e) {
+            return;
+        }
+        long now = System.currentTimeMillis() / 1000;
+        Chart.Day day = Chart.selected(Chart.model(Repo.load(store), days, now), days,
+                store.dayBack(id, Chart.midnight(now, 0)));
+        RemoteViews v = new RemoteViews(ctx.getPackageName(), R.layout.widget);
+        v.setScrollPosition(R.id.list, DayView.positionFor(day, now));
+        AppWidgetManager.getInstance(ctx).partiallyUpdateAppWidget(id, v);
     }
 
     private static PendingIntent broadcast(Context ctx, String action, int id, int value) {
@@ -120,7 +159,7 @@ public class WidgetProvider extends AppWidgetProvider {
         Chart.Model m = Chart.model(data, days, now);
         boolean vertical = days != 7, browse = days == 3;
         int back = browse ? Math.max(0, Math.min(2, store.dayBack(id, today))) : 0;
-        Chart.Day day = vertical ? m.days.get(days - 1 - back) : null;
+        Chart.Day day = vertical ? Chart.selected(m, days, back) : null;
         double off = m.realOutage, planned = m.plannedOutage, estimated = m.estimated;
         boolean hasSchedule = m.hasSchedule;
         if (day != null) {
@@ -152,13 +191,22 @@ public class WidgetProvider extends AppWidgetProvider {
             v.setOnClickPendingIntent(R.id.next, broadcast(ctx, DAY, id, Math.max(0, back - 1)));
         }
 
-        // size of the picture: the widget minus padding, header, summary, footer (and the arrows)
-        int chartWidthDp = widthDp - 24 - (browse ? 52 : 0);
-        int chartHeightDp = heightDp - 24 - 104 - (browse ? 10 : 0);
-        int width = Math.min(1000, Math.max(200, Math.round(chartWidthDp * density)));
-        int height = Math.min(1200, Math.max(80, Math.round(chartHeightDp * density)));
-        v.setImageViewBitmap(R.id.chart, day != null ? Chart.drawDay(day, width, height, density, now)
-                : Chart.draw(m, width, height, density, now));
+        v.setViewVisibility(R.id.list, vertical ? View.VISIBLE : View.GONE);
+        v.setViewVisibility(R.id.chart, vertical ? View.GONE : View.VISIBLE);
+        if (vertical) {                           // scrolling list of 3 hour slices
+            Intent slices = new Intent(ctx, DayService.class).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id);
+            slices.setData(Uri.parse(slices.toUri(Intent.URI_INTENT_SCHEME)));        // one list per widget
+            v.setRemoteAdapter(R.id.list, slices);
+            // taps on list items fill into this template, so it has to be mutable (it names our own activity)
+            int mutable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? PendingIntent.FLAG_MUTABLE : 0;
+            v.setPendingIntentTemplate(R.id.list, PendingIntent.getActivity(ctx, 2,
+                    new Intent(ctx, MainActivity.class).putExtra("tab", setUp ? "statistics" : "settings"),
+                    PendingIntent.FLAG_UPDATE_CURRENT | mutable));
+        } else {
+            int width = Math.min(1000, Math.max(200, Math.round((widthDp - 24) * density)));
+            int height = Math.min(1200, Math.max(80, Math.round((heightDp - 24 - 104) * density)));
+            v.setImageViewBitmap(R.id.chart, Chart.draw(m, width, height, density, now));
+        }
 
         int[] chips = {R.id.range1, R.id.range3, R.id.range7};
         int[] values = {1, 3, 7};

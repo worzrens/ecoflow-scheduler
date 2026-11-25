@@ -249,13 +249,29 @@
             android:textSize="22sp"
             android:visibility="gone" />
 
-        <ImageView
-            android:id="@+id/chart"
+        <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:contentDescription="@string/widget_description"
-            android:scaleType="fitCenter" />
+            android:layout_weight="1">
+
+            <ImageView
+                android:id="@+id/chart"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@string/widget_description"
+                android:scaleType="fitCenter"
+                android:visibility="gone" />
+
+            <ListView
+                android:id="@+id/list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:cacheColorHint="@android:color/transparent"
+                android:divider="@null"
+                android:dividerHeight="0dp"
+                android:listSelector="@android:color/transparent"
+                android:scrollbars="none" />
+        </FrameLayout>
 
         <TextView
             android:id="@+id/next"

@@ -189,7 +189,8 @@ The app does not reload the page or pass the site's security check for you.
 - top line: battery, state and **Input / Charging / Output / Limit** (as on the desktop's input card)
 - **1d** today as a vertical timeline with planned outages as dashed outlines; **3d** the same, one day at a time,
   moving with the side arrows (Android keeps sideways swipes for home-screen pages); **7d** one row per day with
-  the planned outages under it (plus tomorrow once published).
+  the planned outages under it (plus tomorrow once published). In 1d / 3d the day keeps at least 20 dp per hour:
+  on a short widget swipe up and down through it.
 
 - **Get the APK:** GitHub > Actions > *android* > latest run > artifact `EcoFlowWidget-<run number>.apk` (a plain APK, no unzipping). Open it on the
   phone (allow installing from that source). Android 8 or newer.
