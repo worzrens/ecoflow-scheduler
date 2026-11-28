@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -27,8 +28,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 /**
- * Read-only access to the private data repository the desktop app syncs to. One request lists every file; only
- * files whose content changed are downloaded and kept on the phone. Nothing is ever written to the repository.
+ * The private data repository the desktop app syncs to. One request lists every file; only files whose content
+ * changed are downloaded and kept on the phone. The only thing ever written is this phone's own folder, and only
+ * once a mark was made on it (see pushMarks).
  */
 final class Repo {
     private static final String API = "https://api.github.com/repos/";
@@ -38,6 +40,8 @@ final class Repo {
         final List<Segments.Row> rows = new ArrayList<>();
         /** day (unix midnight) -> 24 state letters of the chosen group */
         final Map<Long, String> schedule = new TreeMap<>();
+        /** manual marks of every device */
+        final List<Segments.Mark> marks = new ArrayList<>();
         String region = "", group = "";
     }
 
@@ -87,7 +91,8 @@ final class Repo {
             if (!"blob".equals(e.optString("type")) || !path.startsWith(prefix)) continue;
             String name = path.substring(path.lastIndexOf('/') + 1);
             boolean history = name.endsWith(".jsonl") && name.length() >= 10 && name.substring(0, 10).compareTo(cutoff) >= 0;
-            if (history || name.equals("settings.json") || name.equals("schedule.json")) {
+            if (history || name.equals("settings.json") || name.equals("schedule.json")
+                    || name.equals("marks.json")) {
                 wanted.put(path, e.getString("sha"));
             }
         }
@@ -134,6 +139,46 @@ final class Repo {
         }
     }
 
+    /**
+     * Publish the marks made on this phone, if they changed since the last upload. Needs a token that may write
+     * (Contents: Read and write). Returns the problem, or "".
+     */
+    static synchronized String pushMarks(Store store) {
+        List<Segments.Mark> own = store.ownMarks();
+        if (own.isEmpty() || !store.configured()) return "";
+        try {
+            String repo = store.get("repo", ""), token = store.secret("token");
+            String folder = "ecoflow-history/" + safe(store.get("sn", "")) + "/" + store.deviceId() + "/";
+            String text = Marks.document(own).toString();
+            String stamp = repo + "|" + folder + "|" + text;
+            if (stamp.equals(store.get("marksPushed", ""))) return "";
+            put(repo, token, folder + "peer.json", new JSONObject().put("label", store.deviceLabel()).toString());
+            put(repo, token, folder + "marks.json", text);
+            store.put("marksPushed", stamp);
+            store.put("marksError", "");
+            return "";
+        } catch (IOException | JSONException e) {
+            String message = String.valueOf(e.getMessage());
+            store.put("marksError", message);
+            return message;
+        }
+    }
+
+    private static void put(String repo, String token, String path, String text) throws IOException, JSONException {
+        String url = API + repo + "/contents/" + path;
+        Map<String, String> h = headers(token, "application/vnd.github+json");
+        Http.Reply old = Http.send("GET", url, h, null);
+        JSONObject body = new JSONObject().put("message", "sync phone: " + path.substring(path.lastIndexOf('/') + 1))
+                .put("content", Base64.getEncoder().encodeToString(text.getBytes(StandardCharsets.UTF_8)));
+        if (old.code == 200) body.put("sha", new JSONObject(old.text()).getString("sha"));
+        h.put("Content-Type", "application/json");
+        Http.Reply r = Http.send("PUT", url, h, body.toString());
+        if (r.code == 403 || r.code == 404) {
+            throw new IOException("The token may only read - give it Contents: Read and write");
+        }
+        if (r.code != 200 && r.code != 201) throw new IOException("GitHub answered HTTP " + r.code);
+    }
+
     static Segments.Row parseRow(String line, String src) {
         try {
             JSONArray a = new JSONArray(line);
@@ -162,6 +207,7 @@ final class Repo {
         Data d = new Data();
         List<Segments.Row> all = new ArrayList<>(store.liveRows());
         List<JSONObject> settings = new ArrayList<>(), schedules = new ArrayList<>();
+        d.marks.addAll(store.ownMarks());       // at once, before they made the round through the repository
         try {
             if (index(store).exists()) {
                 JSONObject idx = new JSONObject(new String(Files.readAllBytes(index(store).toPath()), StandardCharsets.UTF_8));
@@ -181,6 +227,8 @@ final class Repo {
                         settings.add(new JSONObject(text));
                     } else if (path.endsWith("/schedule.json")) {
                         schedules.add(new JSONObject(text));
+                    } else if (path.endsWith("/marks.json")) {
+                        d.marks.addAll(Marks.parse(new JSONObject(text)));
                     }
                 }
             }

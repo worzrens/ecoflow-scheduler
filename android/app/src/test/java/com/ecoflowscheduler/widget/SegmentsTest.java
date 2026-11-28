@@ -34,6 +34,7 @@ public class SegmentsTest {
                 assertEquals(at + " soc start", w.isNull(3) ? -1 : w.getDouble(3), Double.isNaN(g.socStart) ? -1 : g.socStart, 0.01);
                 assertEquals(at + " soc end", w.isNull(4) ? -1 : w.getDouble(4), Double.isNaN(g.socEnd) ? -1 : g.socEnd, 0.01);
                 assertEquals(at + " energy", w.getDouble(5), g.outKwh, 0.0001);
+                assertEquals(at + " marked by hand", w.getDouble(6), g.manualSeconds(), 0.01);
             }
         }
     }
@@ -60,11 +61,17 @@ public class SegmentsTest {
                 r.src = a.getString(9);
                 list.add(r);
             }
+            List<Segments.Mark> marks = new ArrayList<>();
+            JSONArray made = k.getJSONArray("marks");
+            for (int i = 0; i < made.length(); i++) {
+                JSONArray a = made.getJSONArray(i);
+                marks.add(new Segments.Mark(a.getLong(0), a.getLong(1), a.getString(2), a.getDouble(3), a.getString(4)));
+            }
             Segments.State state = Segments.stateSince(list.subList(0, k.getInt("state_rows")));
             assertEquals("case " + c + " state", k.getJSONArray("state").getString(0), state.name);
             assertEquals("case " + c + " since", k.getJSONArray("state").getLong(1), state.since);
             same("case " + c, k.getJSONArray("segments"),
-                    Segments.real(list, k.getDouble("t0"), k.getDouble("t1"), k.getDouble("now")));
+                    Segments.real(list, marks, k.getDouble("t0"), k.getDouble("t1"), k.getDouble("now")));
         }
     }
 

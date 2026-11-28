@@ -24,6 +24,9 @@ public class WidgetProvider extends AppWidgetProvider {
     private static final String RANGE = "com.ecoflowscheduler.widget.RANGE";
     private static final String REFRESH = "com.ecoflowscheduler.widget.REFRESH";
     private static final String DAY = "com.ecoflowscheduler.widget.DAY";
+    static final long FLASH_MS = 2000;                    // how long a new "updated" time stays highlighted
+    private static final long TURN_MS = 900, BUSY_TIMEOUT_MS = 60_000;
+    private static boolean unflashPending;
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager manager, int[] ids) {
@@ -39,6 +42,7 @@ public class WidgetProvider extends AppWidgetProvider {
         });
         RefreshJob.schedulePeriodic(ctx);
         RefreshJob.refreshNow(ctx);
+        LiveService.update(ctx);
     }
 
     @Override
@@ -52,6 +56,7 @@ public class WidgetProvider extends AppWidgetProvider {
     @Override
     public void onDisabled(Context ctx) {
         RefreshJob.cancel(ctx);
+        LiveService.update(ctx);
     }
 
     @Override
@@ -74,8 +79,13 @@ public class WidgetProvider extends AppWidgetProvider {
                 scrollToNow(ctx, id);
             });
         } else if (REFRESH.equals(intent.getAction())) {
-            RefreshJob.schedulePeriodic(ctx);
-            RefreshJob.refreshNow(ctx);
+            new Store(ctx).put("busySince", String.valueOf(System.currentTimeMillis()));
+            LiveService.update(ctx);                      // a tap is a moment Android allows starting it
+            inBackground(() -> {
+                renderAll(ctx);                           // spinner and green outline at once
+                RefreshJob.schedulePeriodic(ctx);
+                RefreshJob.refreshNow(ctx);
+            });
         } else {
             super.onReceive(ctx, intent);
         }
@@ -92,14 +102,81 @@ public class WidgetProvider extends AppWidgetProvider {
         }).start();
     }
 
-    static void renderAll(Context ctx) {
+    /** End the refresh animation (after at least one full turn) and highlight the "updated" time. */
+    static void refreshDone(Context ctx) throws InterruptedException {
+        Store store = new Store(ctx);
+        long since = Long.parseLong(store.get("busySince", "0"));
+        long left = since + TURN_MS - System.currentTimeMillis();
+        if (left > 0) Thread.sleep(left);
+        store.put("busySince", "0");
+        store.put("timeReplay", "1");           // slide the time in again even if the minute did not change
+        store.put("flashUntil", String.valueOf(System.currentTimeMillis() + FLASH_MS));
+        renderAll(ctx);
+    }
+
+    /** Take the highlight of the time away again once it is over. */
+    private static synchronized void unflashLater(Context ctx, long delay) {
+        if (unflashPending) return;
+        unflashPending = true;
+        new Thread(() -> {
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            synchronized (WidgetProvider.class) {
+                unflashPending = false;
+            }
+            renderAll(ctx);
+        }).start();
+    }
+
+    static synchronized void renderAll(Context ctx) {
         AppWidgetManager manager = AppWidgetManager.getInstance(ctx);
         int[] ids = manager.getAppWidgetIds(new ComponentName(ctx, WidgetProvider.class));
         if (ids.length == 0) return;
         Store store = new Store(ctx);
         Repo.Data data = Repo.load(store);
-        for (int id : ids) manager.updateAppWidget(id, views(ctx, manager, store, data, id));
+        Updated updated = Updated.next(store, data);
+        for (int id : ids) manager.updateAppWidget(id, views(ctx, manager, store, data, id, updated));
         manager.notifyAppWidgetViewDataChanged(ids, R.id.list);          // the day list redraws itself (DayService)
+        if (updated.flashLeft > 0) unflashLater(ctx, updated.flashLeft + 100);
+    }
+
+    /**
+     * The time in the footer: the newest reading. A new value slides in (the two texts of a ViewFlipper take turns)
+     * and is shown green for a moment.
+     */
+    private static final class Updated {
+        String text, previous;
+        int slot;
+        long flashLeft;
+        boolean changed;          // slide the new value in; otherwise the flipper is left alone (no replay)
+
+        static Updated next(Store store, Repo.Data data) {
+            long now = System.currentTimeMillis();
+            long today = Chart.midnight(now / 1000, 0);
+            long at = data.rows.isEmpty() ? 0 : data.rows.get(data.rows.size() - 1).ts;
+            boolean failed = !store.get("repoError", "").isEmpty() || !store.get("liveError", "").isEmpty();
+            String text = (failed ? "⚠ " : "") + (at == 0 ? ""
+                    : new SimpleDateFormat(at >= today ? "HH:mm" : "d.MM HH:mm", Locale.ROOT).format(new Date(at * 1000)));
+            Updated u = new Updated();
+            u.slot = Integer.parseInt(store.get("timeSlot", "0"));
+            String shown = store.get("timeShown", "");
+            u.changed = !text.equals(shown) || "1".equals(store.get("timeReplay", ""));
+            if (u.changed) {
+                store.put("timeReplay", "");
+                u.slot ^= 1;
+                store.put("timeSlot", String.valueOf(u.slot));
+                store.put("timeShown", text);
+                store.put("timeBefore", shown);
+                store.put("flashUntil", String.valueOf(now + FLASH_MS));
+            }
+            u.text = text;
+            u.previous = store.get("timeBefore", "");
+            u.flashLeft = Math.max(0, Long.parseLong(store.get("flashUntil", "0")) - now);
+            return u;
+        }
     }
 
     /** Move the day list to the current time (a past day: to its start). */
@@ -133,7 +210,8 @@ public class WidgetProvider extends AppWidgetProvider {
         v.setTextViewTextSize(value, TypedValue.COMPLEX_UNIT_SP, narrow ? 10.5f : 13f);
     }
 
-    private static RemoteViews views(Context ctx, AppWidgetManager manager, Store store, Repo.Data data, int id) {
+    private static RemoteViews views(Context ctx, AppWidgetManager manager, Store store, Repo.Data data, int id,
+                                     Updated updated) {
         RemoteViews v = new RemoteViews(ctx.getPackageName(), R.layout.widget);
         long now = System.currentTimeMillis() / 1000;
         long today = Chart.midnight(now, 0);
@@ -221,11 +299,19 @@ public class WidgetProvider extends AppWidgetProvider {
                 new Intent(ctx, MainActivity.class).putExtra("tab", setUp ? "dashboard" : "settings"),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
 
-        boolean failed = !store.get("repoError", "").isEmpty() || !store.get("liveError", "").isEmpty();
-        long at = data.rows.isEmpty() ? 0 : data.rows.get(data.rows.size() - 1).ts;
-        String updated = at == 0 ? ""
-                : new SimpleDateFormat(at >= today ? "HH:mm" : "d.MM HH:mm", Locale.ROOT).format(new Date(at * 1000));
-        v.setTextViewText(R.id.updated, (failed ? "⚠ " : "") + updated);
+        boolean busy = System.currentTimeMillis() - Long.parseLong(store.get("busySince", "0")) < BUSY_TIMEOUT_MS;
+        v.setInt(R.id.refresh, "setBackgroundResource", busy ? R.drawable.chip_busy : R.drawable.chip);
+        v.setViewVisibility(R.id.refresh_icon, busy ? View.GONE : View.VISIBLE);
+        v.setViewVisibility(R.id.refresh_spin, busy ? View.VISIBLE : View.GONE);
+
+        int[] times = {R.id.updated_a, R.id.updated_b};
+        for (int i = 0; i < times.length; i++) {
+            // while nothing changes both texts hold the value, so it is right whichever of them is showing
+            boolean current = !updated.changed || i == updated.slot;
+            v.setTextViewText(times[i], current ? updated.text : updated.previous);
+            v.setTextColor(times[i], current && updated.flashLeft > 0 ? Header.GREEN : Header.MUTED);
+        }
+        if (updated.changed) v.setDisplayedChild(R.id.updated, updated.slot);
         return v;
     }
 }

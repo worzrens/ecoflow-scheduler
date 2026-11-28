@@ -100,6 +100,7 @@ class Segment:
     soc_start: float | None = None   # battery level at the start / end of the segment (None = unknown)
     soc_end: float | None = None
     gap_from: float | None = None    # level the previous block ended at when this block really started higher (unrecorded recharge)
+    manual_spans: list = field(default_factory=list)   # [(start, end)] parts without data that the user marked by hand
 
     @property
     def guessed(self) -> bool:
@@ -110,7 +111,7 @@ class Segment:
         if self.soc_start is None or self.soc_end is None:
             return ""
         a, b = round(self.soc_start), round(self.soc_end)
-        tilde = "~" if self.guessed else ""
+        tilde = "~" if self.guessed or self.manual_spans else ""      # never measured
         if a == b:
             return f"{tilde}{a}%" if short else f"Battery {tilde}{a}% (steady)"
         arrow = "→"
@@ -118,14 +119,18 @@ class Segment:
 
     def start_estimated(self) -> bool:
         """True when the first moment of the block is not backed by a real sample."""
-        return any(a <= self.start + 1 for a, _ in self.est_spans)
+        return any(a <= self.start + 1 for a, _ in self.est_spans + self.manual_spans)
 
     def end_estimated(self) -> bool:
-        return any(b >= self.end - 1 for _, b in self.est_spans)
+        return any(b >= self.end - 1 for _, b in self.est_spans + self.manual_spans)
 
     @property
     def est_seconds(self) -> float:
         return sum(b - a for a, b in self.est_spans)
+
+    @property
+    def manual_seconds(self) -> float:
+        return sum(b - a for a, b in self.manual_spans)
 
     @property
     def seconds(self) -> float:
@@ -181,6 +186,63 @@ def grid_segments(rows: list[tuple], t0: float, t1: float, now: float | None = N
         cursor = max(cursor, s.end)
     if end_limit - cursor > 1:
         out.append(Segment(cursor, end_limit, "nodata"))
+    return out
+
+
+MARK_KINDS = ("grid", "outage", "clear")
+
+
+def resolve_marks(marks: list[tuple]) -> list[tuple[float, float, str]]:
+    """Manual marks (start, end, kind, made at, made by) -> non-overlapping (start, end, 'grid'|'outage'), sorted.
+    Where marks overlap the newest one wins; a 'clear' mark removes what was there."""
+    out: list[tuple[float, float, str]] = []
+    for a, b, kind, *_ in sorted(marks, key=lambda m: (m[3], m[4], m[0])):
+        kept = []
+        for x, y, k in out:
+            if y <= a or x >= b:
+                kept.append((x, y, k))
+                continue
+            if x < a:
+                kept.append((x, a, k))
+            if y > b:
+                kept.append((b, y, k))
+        if kind != "clear":
+            kept.append((a, b, kind))
+        out = kept
+    return sorted(out)
+
+
+def apply_marks(segs: list[Segment], marks: list[tuple[float, float, str]]) -> list[Segment]:
+    """Give the marked parts of 'no data' stretches the kind the user chose (recorded data always wins). Run it between
+    grid_segments and fill_gaps. `marks` come from resolve_marks. Battery levels are drawn from the data on both sides,
+    energy from the average power of a neighbour of the same kind (unknown = 0)."""
+    out: list[Segment] = []
+    for i, s in enumerate(segs):
+        if s.kind != "nodata":
+            out.append(s)
+            continue
+        prev = next((x for x in reversed(segs[:i]) if x.kind != "nodata"), None)
+        nxt = next((x for x in segs[i + 1:] if x.kind != "nodata"), None)
+        s0 = prev.soc_end if prev else None
+        s1 = nxt.soc_start if nxt else s0
+        cursor = s.start
+        for a, b, kind in marks:
+            a, b = max(a, s.start), min(b, s.end)
+            if b <= a:
+                continue
+            if a > cursor:
+                out.append(Segment(cursor, a, "nodata"))
+            src = next((x for x in (prev, nxt) if x is not None and x.kind == kind), None)
+            ow, iw = _avg_watts(src) if src else (0.0, 0.0)
+            end_level = s1
+            if kind == "outage" and s0 is not None and s1 is not None:
+                end_level = min(s0, s1)
+            out.append(Segment(a, b, kind, ow * (b - a) / 3.6e6, iw * (b - a) / 3.6e6, manual_spans=[(a, b)],
+                               soc_start=_lerp(s.start, s.end, s0, end_level, a),
+                               soc_end=_lerp(s.start, s.end, s0, end_level, b)))
+            cursor = b
+        if s.end > cursor:
+            out.append(Segment(cursor, s.end, "nodata"))
     return out
 
 
@@ -266,10 +328,11 @@ def slice_segments(segs: list[Segment], t0: float, t1: float) -> list[Segment]:
             continue
         f = (b - a) / s.seconds if s.seconds > 0 else 0.0
         spans = [(max(x, t0), min(y, t1)) for x, y in s.est_spans if min(y, t1) > max(x, t0)]
+        manual = [(max(x, t0), min(y, t1)) for x, y in s.manual_spans if min(y, t1) > max(x, t0)]
         out.append(Segment(a, b, s.kind, s.out_kwh * f, s.in_kwh * f, spans,
                            soc_start=_lerp(s.start, s.end, s.soc_start, s.soc_end, a),
                            soc_end=_lerp(s.start, s.end, s.soc_start, s.soc_end, b),
-                           gap_from=s.gap_from if a <= s.start else None))
+                           gap_from=s.gap_from if a <= s.start else None, manual_spans=manual))
     return out
 
 
@@ -283,8 +346,10 @@ def merge_same_kind(segs: list[Segment]) -> list[Segment]:
             last.out_kwh += s.out_kwh
             last.in_kwh += s.in_kwh
             last.est_spans = last.est_spans + list(s.est_spans)
+            last.manual_spans = last.manual_spans + list(s.manual_spans)
             last.soc_end = s.soc_end if s.soc_end is not None else last.soc_end
         else:
             out.append(Segment(s.start, s.end, s.kind, s.out_kwh, s.in_kwh, list(s.est_spans),
-                               soc_start=s.soc_start, soc_end=s.soc_end, gap_from=s.gap_from))
+                               soc_start=s.soc_start, soc_end=s.soc_end, gap_from=s.gap_from,
+                               manual_spans=list(s.manual_spans)))
     return out

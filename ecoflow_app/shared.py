@@ -1,8 +1,9 @@
 """Settings and the outage schedule shared between installs through the same store as the history (see sync.py).
 
-Each install publishes two files in its own folder:
+Each install publishes up to three files in its own folder:
   settings.json  {"v": 1, "sections": {name: {"at": epoch, "by": device, "value": ...}}}
   schedule.json  {"v": 1, "regions": {region: {day: {"u": published, "g": {group: 24 state letters}}}}}
+  marks.json     {"v": 1, "marks": [{"start", "end", "kind": grid|outage|clear, "at", "by"}]}  (made on that install)
 Settings are "newest change wins" per section. A section that was never changed has at = 0 and never overrides anyone.
 No credentials are ever part of these files.
 """
@@ -11,11 +12,13 @@ from __future__ import annotations
 import json
 import time
 
+from .power import MARK_KINDS
 from .rules import RulesConfig
 from .schedule import GROUPS, REGIONS
 
 SETTINGS_FILE = "settings.json"
 SCHEDULE_FILE = "schedule.json"
+MARKS_FILE = "marks.json"
 SECTIONS = ("rules", "temporary", "automation", "outage")
 SCHEDULE_DAYS = 15            # how far back the shared schedule file reaches
 STATE_KEY = "shared:state"
@@ -159,3 +162,26 @@ def apply_schedule(history, data: bytes) -> int:
                     new.append((region, int(day), grp, hours, u))
     history.schedule_put_rows(new)
     return len(new)
+
+
+# ---------------------------------------------------------------- manual marks of stretches without data
+def marks_doc(history) -> bytes | None:
+    """The marks made on this install, or None when there are none (nothing to publish)."""
+    marks = [{"start": a, "end": b, "kind": k, "at": at, "by": by} for a, b, k, at, by in history.marks(own_only=True)]
+    if not marks:
+        return None
+    return json.dumps({"v": 1, "marks": marks}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def apply_marks_doc(history, data: bytes, now: float | None = None) -> int:
+    """Take over another install's marks. Returns how many were new."""
+    now = now or time.time()
+    rows = []
+    for m in json.loads(data).get("marks") or []:
+        try:
+            a, b, kind, at = int(m["start"]), int(m["end"]), m["kind"], float(m["at"])
+            if kind in MARK_KINDS and 0 < a < b and b - a <= 31 * 86400 and at > 0:
+                rows.append((a, b, kind, min(at, now + CLOCK_SLACK), str(m.get("by", "another device"))))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return history.add_marks(rows, own=False)

@@ -313,8 +313,29 @@ const PLAN_TEXT = {1: ['Power on', C.green], 2: ['Planned outage', C.orange], 3:
 /* days: [{start, end, segs: [{start, end, kind, socStart, socEnd, out, est, note, detail}], plan: [...] or null}] */
 class Timeline {
   constructor(canvas, mode) {
-    Object.assign(this, {canvas, mode, days: [], now: 0, overlay: false, hover: null});
+    Object.assign(this, {canvas, mode, days: [], now: 0, overlay: false, hover: null, gaps: [], onZone: null});
     touchable(canvas, (x, y) => this.point(x, y), () => { if (this.hover) { this.hover = null; this.draw(); } });
+    // a click only follows a real tap, not the start of a scroll
+    canvas.addEventListener('click', e => {
+      if (!this.onZone) return;
+      const box = canvas.getBoundingClientRect(), x = e.clientX - box.left, y = e.clientY - box.top;
+      this.point(x, y);
+      this.onZone(this.zone());
+    });
+  }
+
+  /* The stretch without data meant by the current touch: the one under the finger, else the longest one inside the
+     touched block (an estimated part can be only a few pixels high). null = nothing to mark there. */
+  zone() {
+    if (!this.hover || !this.hover.seg) return null;
+    const {i, seg, y} = this.hover, d = this.days[i], r = this.geom(this.canvas.clientWidth, this.canvas.clientHeight);
+    const t = d.start + (y - r.t) / r.h * (d.end - d.start);
+    const inside = g => Math.min(g[1], seg.end) - Math.max(g[0], seg.start);
+    const gap = this.gaps.find(g => g[0] <= t && t <= g[1])
+      || this.gaps.filter(g => inside(g) > 1).sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0];
+    if (!gap) return null;
+    const marked = this.days.some(day => day.segs.some(s => s.manual > 0 && Math.min(s.end, gap[1]) - Math.max(s.start, gap[0]) > 1));
+    return {start: gap[0], end: gap[1], marked};
   }
 
   set(days, now, overlay) {
@@ -459,7 +480,7 @@ class Timeline {
     text(g, g.measureText(title).width > q.w - 11 ? (SHORT[title] || title) : title, q.x + 7, q.y + 10, ink, 11, 'left', true);
     if (q.h >= 32) text(g, this.range(d, s), q.x + 7, q.y + 24, ink, 10);
     if (q.h >= 46 && this.mode === 'real' && s.kind !== KIND.NODATA) {
-      const extra = [battery(s, true), (s.est ? '~' : '') + fmtEnergy(s.out || 0)].filter(Boolean);
+      const extra = [battery(s, true), energyKnown(s) ? (s.est ? '~' : '') + fmtEnergy(s.out || 0) : ''].filter(Boolean);
       text(g, extra[0], q.x + 7, q.y + 37, ink, 10);
       if (q.h >= 60 && extra[1]) text(g, extra[1], q.x + 7, q.y + 50, ink, 10);
     }
@@ -480,9 +501,10 @@ class Timeline {
     if (this.mode === 'real' && seg.est > 1) out.push([fmtHm(length) + ' total / ' + fmtHm(seg.est) + ' estimated', C.text]);
     else out.push([fmtHm(length), C.muted]);
     if (this.mode === 'real') {
+      if (seg.manual > 1) out.push([fmtHm(seg.manual) + ' marked by hand', C.text]);
       if (seg.kind === KIND.NODATA) out.push(['Nothing was recorded', C.muted]);
       else {
-        out.push(['Power used: ' + (seg.est ? '~' : '') + fmtEnergy(seg.out || 0), C.muted]);
+        if (energyKnown(seg)) out.push(['Power used: ' + (seg.est ? '~' : '') + fmtEnergy(seg.out || 0), C.muted]);
         if (battery(seg)) out.push([battery(seg), C.muted]);
       }
     } else if (seg.detail) out.push([seg.detail, C.muted]);
@@ -492,9 +514,12 @@ class Timeline {
   }
 }
 
+/* marked by hand with nothing nearby to estimate from: no energy figure */
+const energyKnown = s => !(s.manual > 0 && !(s.out > 0));
+
 function battery(s, short) {
   if (s.socStart == null || s.socEnd == null) return '';
-  const a = Math.round(s.socStart), b = Math.round(s.socEnd), tilde = s.est ? '~' : '';
+  const a = Math.round(s.socStart), b = Math.round(s.socEnd), tilde = s.est || s.manual ? '~' : '';
   if (a === b) return short ? tilde + a + '%' : 'Battery ' + tilde + a + '% (steady)';
   return short ? tilde + a + '→' + b + '%' : 'Battery ' + tilde + a + '% → ' + b + '%';
 }

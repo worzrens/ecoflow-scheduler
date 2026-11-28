@@ -31,6 +31,7 @@ class Controller(QObject):
     schedule_status = Signal(str)   # text for the Settings tab; also tells the graphs to refresh
     sync_progress = Signal(str)     # phase text while a round is running: connecting / sending / reading
     settings_synced = Signal(str)   # "Updated from <device> ..." after another install's settings were applied
+    marks_changed = Signal()        # a stretch without data was marked, here or on another device
 
     def __init__(self):
         super().__init__()
@@ -72,6 +73,13 @@ class Controller(QObject):
         self._blocked_until = 0.0         # after a bot-protection answer the automatic fetch pauses
         self._import_server = importer.start(schedule.IMPORT_PORT, self.import_schedule,       # from the user's browser
                                              {schedule.USERSCRIPT_PATH: schedule.USERSCRIPT})
+
+    # ---- manual marks of stretches without data
+    def add_mark(self, start: float, end: float, kind: str):
+        """kind: 'grid' (there was electricity), 'outage' (there was none) or 'clear' (remove the mark)."""
+        self.history.add_marks([(int(start), int(end), kind, time.time(), socket.gethostname())], own=True)
+        self.marks_changed.emit()
+        self._soon.start(5000)
 
     # ---- shared settings
     def _file_times(self) -> dict:
@@ -260,6 +268,8 @@ class Controller(QObject):
         self._sync_busy = False
         self.sync_result = res
         self._apply_shared(res.peer_settings)
+        if res.marks:
+            self.marks_changed.emit()
         if res.schedule_rows:
             self.schedule_status.emit(f"Schedule received from another device ({res.schedule_rows} entries)")
         self.sync_status.emit(res.text())
@@ -318,7 +328,8 @@ class Controller(QObject):
             try:
                 sync.export_new(self.history, tr)
                 sync.publish(self.history, tr, {shared.SETTINGS_FILE: shared.settings_doc(self._note_shared()),
-                                                shared.SCHEDULE_FILE: shared.schedule_doc(self.history)})
+                                                shared.SCHEDULE_FILE: shared.schedule_doc(self.history),
+                                                **sync.own_marks(self.history)})
             except Exception:  # noqa: BLE001
                 pass
 

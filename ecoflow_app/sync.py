@@ -336,9 +336,15 @@ def publish(history: History, tr: Transport, docs: dict[str, bytes]) -> None:
             history.meta_set(key, digest)
 
 
-def read_shared(history: History, tr: Transport) -> tuple[list[dict], int]:
-    """The other installs' settings documents (for the caller to apply) and how many schedule rows were taken over."""
-    settings, schedule_rows = [], 0
+def own_marks(history: History) -> dict[str, bytes]:
+    doc = shared.marks_doc(history)
+    return {shared.MARKS_FILE: doc} if doc else {}
+
+
+def read_shared(history: History, tr: Transport) -> tuple[list[dict], int, int]:
+    """The other installs' settings documents (for the caller to apply) and how many schedule rows and manual marks
+    were taken over."""
+    settings, schedule_rows, marks = [], 0, 0
     for peer in tr.list_peers():
         files = tr.list_files(peer)
         try:
@@ -351,9 +357,14 @@ def read_shared(history: History, tr: Transport) -> tuple[list[dict], int]:
             if token and history.meta_get(key) != token:
                 schedule_rows += shared.apply_schedule(history, tr.read(peer, shared.SCHEDULE_FILE))
                 history.meta_set(key, token)
+            token = files.get(shared.MARKS_FILE)
+            key = f"import:{peer}:{shared.MARKS_FILE}"
+            if token and history.meta_get(key) != token:
+                marks += shared.apply_marks_doc(history, tr.read(peer, shared.MARKS_FILE))
+                history.meta_set(key, token)
         except (ValueError, TypeError, AttributeError):     # a damaged file from one install must not stop the rest
             continue
-    return settings, schedule_rows
+    return settings, schedule_rows, marks
 
 
 @dataclass
@@ -365,6 +376,7 @@ class SyncResult:
     error: str = ""
     peer_settings: list[dict] = field(default_factory=list)
     schedule_rows: int = 0
+    marks: int = 0
 
     def text(self) -> str:
         when = datetime.fromtimestamp(self.at).strftime("%H:%M")
@@ -390,8 +402,8 @@ def sync_once(history: History, store, sn: str | None = None, machine_id: str | 
         got = import_peers(history, tr)
         res.imported = sum(n for _, n in got.values())
         res.peers = [label for label, _ in got.values()]
-        publish(history, tr, {shared.SCHEDULE_FILE: shared.schedule_doc(history), **(docs or {})})
-        res.peer_settings, res.schedule_rows = read_shared(history, tr)
+        publish(history, tr, {shared.SCHEDULE_FILE: shared.schedule_doc(history), **own_marks(history), **(docs or {})})
+        res.peer_settings, res.schedule_rows, res.marks = read_shared(history, tr)
     except (OSError, ValueError, KeyError) as e:     # requests' errors are OSErrors too
         res.error = str(e)
     return res

@@ -25,7 +25,8 @@ final class Header {
     }
 
     /** `rows` sorted by time; the newest one is "now". */
-    static Header of(List<Segments.Row> rows, long now) {
+    static Header of(List<Segments.Row> all, long now) {
+        List<Segments.Row> rows = Segments.dropStale(all);          // as the app does
         Header h = new Header();
         if (rows.isEmpty()) return h;
         Segments.Row r = rows.get(rows.size() - 1);

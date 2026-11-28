@@ -12,15 +12,15 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
 from .analytics import fmt_energy
 from .charts import CARD, CARD2, GREEN, GRID, MUTED, ORANGE, TEXT
 from .controller import Controller
-from .power import (MAX_GAP, Segment, fill_gaps, grid_segments, link_battery, merge_same_kind, outage_count, outage_seconds,
-                    slice_segments)
+from .power import (MAX_GAP, Segment, apply_marks, fill_gaps, grid_segments, link_battery, merge_same_kind, outage_count,
+                    outage_seconds, resolve_marks, slice_segments)
 from .schedule import count_of, seconds_of
 
 BLANK = CARD                # "no electricity" is drawn as the empty card colour
@@ -69,7 +69,23 @@ def _outline(kind: str, alpha: int = 255) -> QPen | None:
     return None
 
 
+def _energy_known(s: Segment) -> bool:
+    return not (s.manual_spans and s.out_kwh <= 0)      # marked by hand with nothing nearby to estimate from
+
+
+def markable_zone(gaps: list[tuple[float, float]], seg: Segment, t: float) -> tuple[float, float] | None:
+    """The stretch without data meant by a click on `seg` at time `t`: the one under the pointer, else the longest one
+    inside the block (an estimated part can be only a few pixels high)."""
+    under = next((g for g in gaps if g[0] <= t <= g[1]), None)
+    if under:
+        return under
+    inside = [g for g in gaps if min(g[1], seg.end) - max(g[0], seg.start) > 1]
+    return max(inside, key=lambda g: g[1] - g[0], default=None)
+
+
 class OutageTimeline(QWidget):
+    mark_requested = Signal(float, float, str)      # start, end, 'grid' | 'outage' | 'clear'
+
     def __init__(self, mode: str = "real"):
         super().__init__()
         self.mode = mode                                    # "real" | "plan"
@@ -77,6 +93,7 @@ class OutageTimeline(QWidget):
         self.overlay: list[DayInfo] | None = None           # planned outages drawn over the real ones
         self.now = time.time()
         self.calendar = False
+        self.gaps: list[tuple[float, float]] = []           # stretches without any recorded data (can be marked)
         self._hover: tuple[int, Segment | None, QPointF, Segment | None] | None = None
         self.setMouseTracking(True)
         self.setMinimumHeight(330)
@@ -280,7 +297,8 @@ class OutageTimeline(QWidget):
         when = self._range(s, d)
         extra = ""
         if self.mode == "real" and s.kind != "nodata":
-            extra = f" · {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}"
+            if _energy_known(s):
+                extra = f" · {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}"
             if s.battery(True):
                 extra += f" · {s.battery(True)}"
         inner = rect.adjusted(9, 4, -6, -2)
@@ -319,14 +337,19 @@ class OutageTimeline(QWidget):
         else:
             lines.append((fmt_hm(s.seconds), MUTED))
         if self.mode == "real":
+            if s.manual_seconds > 1:
+                lines.append((f"{fmt_hm(s.manual_seconds)} marked by hand", TEXT))
             if s.kind != "nodata":
-                lines.append((f"Power used: {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}", MUTED))
+                if _energy_known(s):
+                    lines.append((f"Power used: {'~' if s.guessed else ''}{fmt_energy(s.out_kwh)}", MUTED))
                 if s.battery():
                     lines.append((s.battery(), MUTED))
                 if s.gap_from is not None:
                     lines.append((f"Was {round(s.gap_from)}% before; recharged while not recorded", MUTED))
             else:
                 lines.append(("Nothing was recorded (app off or unit offline)", MUTED))
+            if self._zone(s, self._time_at(hi, pos)):
+                lines.append(("Click to mark: electricity or outage", GREEN))
         elif s.detail:
             lines.append((s.detail, MUTED))
         if sched is not None and sched.kind in ("outage", "maybe"):
@@ -353,6 +376,37 @@ class OutageTimeline(QWidget):
             p.drawText(QRectF(bx + 13, by + 7 + k * 19, w - 16, 19), Qt.AlignLeft | Qt.AlignVCenter, txt)
 
     # ------------------------------------------------------------ interaction
+    def _time_at(self, i: int, pos: QPointF) -> float:
+        r, _ = self._geom()
+        d = self.days[i]
+        return d.start + (pos.y() - r.top()) / r.height() * (d.end - d.start)
+
+    def _zone(self, s: Segment | None, t: float) -> tuple[float, float] | None:
+        return markable_zone(self.gaps, s, t) if self.mode == "real" and s is not None else None
+
+    def mousePressEvent(self, e):
+        self.mouseMoveEvent(e)
+        if not self._hover or e.button() not in (Qt.LeftButton, Qt.RightButton):
+            return
+        i, seg, pos, _ = self._hover
+        zone = self._zone(seg, self._time_at(i, pos))
+        if zone is None:
+            return
+        a, b = zone
+        menu = QMenu(self)
+        fmt = "%H:%M" if datetime.fromtimestamp(a).date() == datetime.fromtimestamp(b).date() else "%d.%m %H:%M"
+        title = menu.addAction(f"No data {datetime.fromtimestamp(a).strftime(fmt)}–"
+                               f"{datetime.fromtimestamp(b).strftime(fmt)}  ({fmt_hm(b - a)})")
+        title.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("There was electricity").setData("grid")
+        menu.addAction("There was no electricity (outage)").setData("outage")
+        if any(min(s.end, b) - max(s.start, a) > 1 and s.manual_spans for d in self.days for s in d.segments):
+            menu.addAction("Remove mark (back to estimate)").setData("clear")
+        chosen = menu.exec(e.globalPosition().toPoint())
+        if chosen is not None and chosen.data():
+            self.mark_requested.emit(a, b, chosen.data())
+
     def mouseMoveEvent(self, e):
         r, slot = self._geom()
         pos = e.position()
@@ -368,6 +422,8 @@ class OutageTimeline(QWidget):
                     sched = next((s for s in self.overlay[i].segments if s.start <= t <= s.end), None)
         planned_only = seg is None and sched is not None and sched.kind in ("outage", "maybe")   # still in the future
         self._hover = (i, seg, pos, sched) if seg is not None or planned_only else None
+        clickable = seg is not None and self._zone(seg, self._time_at(i, pos)) is not None
+        self.setCursor(Qt.PointingHandCursor if clickable else Qt.ArrowCursor)
         self.update()
 
     def leaveEvent(self, _):
@@ -434,6 +490,7 @@ class OutageCard(QFrame):
         self.legend.setObjectName("muted")
         lay.addWidget(self.legend)
         self.chart = OutageTimeline("real")
+        self.chart.mark_requested.connect(ctrl.add_mark)      # marks_changed then redraws the statistics
         lay.addWidget(self.chart, 1)
 
     def _legend(self, overlay: bool) -> str:
@@ -450,9 +507,16 @@ class OutageCard(QFrame):
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         first = today - timedelta(days=ndays - 1)
         end = today + timedelta(days=1)
-        rows = self.ctrl.history.range(first.timestamp() - 300)
+        # always estimate over the longest range, so a gap that starts before the first shown day still has a
+        # neighbour to be estimated from (and every range shows the same thing for the same day)
+        context = today - timedelta(days=max(RANGES.values()) - 1)
+        rows = self.ctrl.history.range(context.timestamp() - 300)
         # whole range at once so estimates can use data on either side (also across midnight)
-        whole = link_battery(merge_same_kind(fill_gaps(grid_segments(rows, first.timestamp(), end.timestamp(), now))))
+        raw = grid_segments(rows, context.timestamp(), end.timestamp(), now)
+        self.chart.gaps = [(s.start, s.end) for s in raw if s.kind == "nodata"]
+        marked = apply_marks(raw, resolve_marks(self.ctrl.history.marks()))
+        estimated = link_battery(merge_same_kind(fill_gaps(marked)))
+        whole = slice_segments(estimated, first.timestamp(), end.timestamp())
         days = _day_infos(first, ndays, whole)
         configured = self.ctrl.schedule_configured
         self.cb_overlay.setEnabled(configured)
@@ -474,6 +538,9 @@ class OutageCard(QFrame):
         sub = f"{count} outage{'s' if count != 1 else ''}" if count else "no outages recorded"
         if est > 0:
             sub += f" · {fmt_hm(est)} estimated"
+        manual = sum(s.manual_seconds for s in whole if s.kind == "outage")
+        if manual > 0:
+            sub += f" · {fmt_hm(manual)} marked by hand"
         if planned is not None:
             sub += f" · schedule said {fmt_hm(planned)}"
         self.lbl_sub.setText(sub)

@@ -667,6 +667,7 @@ class MainWindow(QMainWindow):
         note.setObjectName("muted")
         note.setWordWrap(True)
         self.ctrl.settings_synced.connect(self._on_settings_synced)
+        self.ctrl.marks_changed.connect(self._refresh_stats)
         self.btn_save = SaveButton("Save && apply")
         self.btn_save.clicked.connect(self._save_rules)
         bottom.addWidget(note, 1)

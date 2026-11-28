@@ -54,8 +54,10 @@ final class Chart {
     /** The last `n` days including today, plus tomorrow when its schedule is already published. */
     static Model model(Repo.Data data, int n, long now) {
         Model m = new Model();
-        long first = midnight(now, 1 - n);
-        List<Segments.Seg> real = Segments.real(data.rows, first, midnight(now, 1), now);
+        // gaps are estimated from their neighbours, so always look at the same days as the app: otherwise a gap that
+        // starts before the first shown day has nothing to be estimated from and shows as "no data" only here
+        long context = midnight(now, 1 - Math.max(n, Model.DAYS));
+        List<Segments.Seg> real = Segments.real(data.rows, data.marks, context, midnight(now, 1), now);
         for (int k = 0; k <= n; k++) {
             Day d = new Day();
             d.start = midnight(now, 1 - n + k);
@@ -156,7 +158,7 @@ final class Chart {
                 p.setTextSize(9 * density);
                 String battery = "";
                 if (s.kind != Segments.NODATA && !Double.isNaN(s.socStart) && !Double.isNaN(s.socEnd)) {
-                    battery = "   " + (s.est.isEmpty() ? "" : "~") + Math.round(s.socStart) + "→" + Math.round(s.socEnd) + "%";
+                    battery = "   " + (s.est.isEmpty() && s.manual.isEmpty() ? "" : "~") + Math.round(s.socStart) + "→" + Math.round(s.socEnd) + "%";
                 }
                 c.drawText(times + battery, x, b.top + 24 * density, p);
             } else if (b.height() >= 12 * density) {

@@ -21,20 +21,27 @@ final class Refresher {
             }
         }
         if (store.configured()) {
-            try {
-                Repo.sync(store);
-                store.put("repoAt", String.valueOf(System.currentTimeMillis() / 1000));
-                store.put("repoError", "");
-            } catch (Exception e) {
-                store.put("repoError", message(e));
-                problems.append("Repository: ").append(message(e)).append('\n');
-            }
+            String error = repository(store);
+            if (!error.isEmpty()) problems.append("Repository: ").append(error).append('\n');
         }
-        WidgetProvider.renderAll(ctx);
         return problems.toString().trim();
     }
 
-    private static String message(Exception e) {
+    /** Download what changed in the repository. Returns the problem, or "". */
+    static String repository(Store store) {
+        try {
+            Repo.sync(store);
+            store.put("repoAt", String.valueOf(System.currentTimeMillis() / 1000));
+            store.put("repoError", "");
+            Repo.pushMarks(store);              // retried here until it works; its problem is shown in the app
+            return "";
+        } catch (Exception e) {
+            store.put("repoError", message(e));
+            return message(e);
+        }
+    }
+
+    static String message(Exception e) {
         String m = e.getMessage();
         return m == null || m.isEmpty() ? e.getClass().getSimpleName() : m;
     }

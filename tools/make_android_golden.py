@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ecoflow_app.power import (drop_stale_samples, fill_gaps, grid_segments, link_battery, merge_same_kind,  # noqa: E402
-                               state_since)
+from ecoflow_app.power import (apply_marks, drop_stale_samples, fill_gaps, grid_segments, link_battery,  # noqa: E402
+                               merge_same_kind, resolve_marks, state_since)
 from ecoflow_app.schedule import day_segments  # noqa: E402
 
 OUT = ROOT / "android" / "app" / "src" / "test" / "resources" / "golden.json"
@@ -38,8 +38,25 @@ def random_rows(seed: int) -> list[tuple]:
     return [unique[k] for k in sorted(unique)]
 
 
+def random_marks(seed: int, raw: list) -> list[tuple]:
+    """Marks over some stretches without data: whole, partial, overlapping, removed again."""
+    rnd = random.Random(seed * 1000)
+    marks, at = [], 1.0
+    for s in raw:
+        if s.kind != "nodata" or rnd.random() < 0.3:
+            continue
+        for _ in range(rnd.randint(1, 3)):
+            a = int(s.start if rnd.random() < 0.5 else rnd.uniform(s.start, s.end))
+            b = int(s.end if rnd.random() < 0.5 else rnd.uniform(a, s.end)) + 1
+            at += 1
+            marks.append((a - 50, b + 50, rnd.choice(["grid", "outage", "outage", "clear"]), at, "pc"))
+    rnd.shuffle(marks)
+    return marks
+
+
 def pack(segs, full=True):
-    return [[s.start, s.end, KIND[s.kind]] + ([s.soc_start, s.soc_end, s.out_kwh] if full else []) for s in segs]
+    return [[s.start, s.end, KIND[s.kind]]
+            + ([s.soc_start, s.soc_end, s.out_kwh, s.manual_seconds] if full else []) for s in segs]
 
 
 def build() -> dict:
@@ -48,9 +65,11 @@ def build() -> dict:
         rows = random_rows(seed)
         t0, t1 = 1_000_000 + 500, 1_000_000 + 86_400
         now = rows[-1][0] + (60 if seed % 2 else 5000)
-        segs = link_battery(merge_same_kind(fill_gaps(grid_segments(drop_stale_samples(rows), t0, t1, now))))
+        raw = grid_segments(drop_stale_samples(rows), t0, t1, now)
+        marks = random_marks(seed, raw) if seed > 2 else []
+        segs = link_battery(merge_same_kind(fill_gaps(apply_marks(raw, resolve_marks(marks)))))
         part = rows[:len(rows) * seed // 6]                      # different end points -> different current states
-        history.append({"rows": [list(r) for r in rows], "t0": t0, "t1": t1, "now": now, "segments": pack(segs),
+        history.append({"rows": [list(r) for r in rows], "marks": [list(m) for m in marks], "t0": t0, "t1": t1, "now": now, "segments": pack(segs),
                         "state_rows": len(part), "state": list(state_since(part))})
     hours = "YYNNFSMGHYYNNNYYMMSFYYNY"
     day = 1_795_000_000

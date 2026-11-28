@@ -72,6 +72,7 @@ public class MainActivity extends Activity {
         super.onResume();
         startPolling();
         RefreshJob.schedulePeriodic(this);
+        LiveService.update(this);
         long synced = Long.parseLong(store.get("repoAt", "0"));
         if (store.configured() && System.currentTimeMillis() / 1000 - synced > SYNC_IF_OLDER) work.execute(this::syncRepo);
         else work.execute(this::push);
@@ -223,6 +224,7 @@ public class MainActivity extends Activity {
                 }
                 push();
                 js("App.connected('account'," + JSONObject.quote(error) + ")");
+                runOnUiThread(() -> LiveService.update(MainActivity.this));
             });
         }
 
@@ -253,13 +255,40 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** "grid" / "outage" / "clear" for a stretch without data; shown at once, then sent to the repository. */
+        @JavascriptInterface
+        public void mark(double start, double end, String kind) {
+            work.execute(() -> {
+                String error;
+                try {
+                    long a = (long) start, b = (long) Math.ceil(end);
+                    if (!Marks.valid(a, b, kind)) throw new IllegalArgumentException("Nothing to mark");
+                    store.addMark(a, b, kind);
+                    push();
+                    error = store.configured() ? Repo.pushMarks(store) : "Connect the data repository to share it";
+                } catch (Exception e) {
+                    error = text(e);
+                }
+                push();
+                WidgetProvider.renderAll(getApplicationContext());
+                js("App.marked(" + JSONObject.quote(error) + ")");
+            });
+        }
+
+        @JavascriptInterface
+        public void setAutoUpdate(boolean on) {
+            store.setAutoUpdate(on);
+            runOnUiThread(() -> LiveService.update(MainActivity.this));
+            work.execute(MainActivity.this::push);
+        }
+
         @JavascriptInterface
         public void disconnect(String what) {
             work.execute(() -> {
                 if ("account".equals(what)) {
                     store.forget("password", "email", "liveError");
                 } else {
-                    store.forget("token", "repo", "repoAt", "repoError");
+                    store.forget("token", "repo", "repoAt", "repoError", "marksError", "marksPushed");
                     store.clearRepoCache();
                 }
                 push();

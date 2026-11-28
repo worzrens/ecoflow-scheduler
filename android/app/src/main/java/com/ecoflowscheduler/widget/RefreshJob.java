@@ -24,8 +24,7 @@ public class RefreshJob extends JobService {
     static void refreshNow(Context ctx) {
         ctx.getSystemService(JobScheduler.class).schedule(
                 new JobInfo.Builder(ONCE, new ComponentName(ctx, RefreshJob.class))
-                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                        .setOverrideDeadline(1000)
+                        .setOverrideDeadline(0)          // also without network: it fails quickly and ends the spinner
                         .build());
     }
 
@@ -36,8 +35,14 @@ public class RefreshJob extends JobService {
     @Override
     public boolean onStartJob(JobParameters params) {
         new Thread(() -> {
+            Context ctx = getApplicationContext();
             try {
-                Refresher.run(getApplicationContext());
+                Refresher.run(ctx);
+                if (params.getJobId() == ONCE) WidgetProvider.refreshDone(ctx);
+                else WidgetProvider.renderAll(ctx);
+                Thread.sleep(WidgetProvider.FLASH_MS + 500);       // stay alive until the highlight is removed
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
             } finally {
                 jobFinished(params, false);
             }

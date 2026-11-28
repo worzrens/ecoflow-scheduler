@@ -1,6 +1,7 @@
 package com.ecoflowscheduler.widget;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -40,6 +41,7 @@ public final class Segments {
         public int kind;
         public double socStart = Double.NaN, socEnd = Double.NaN;
         public final List<double[]> est = new ArrayList<>();      // spans estimated from neighbouring data
+        public final List<double[]> manual = new ArrayList<>();   // spans without data that were marked by hand
 
         Seg(double start, double end, int kind) {
             this.start = start;
@@ -54,6 +56,7 @@ public final class Segments {
             s.socStart = socStart;
             s.socEnd = socEnd;
             s.est.addAll(est);
+            s.manual.addAll(manual);
             return s;
         }
 
@@ -61,19 +64,114 @@ public final class Segments {
             return end - start;
         }
 
+        public double manualSeconds() {
+            double sum = 0;
+            for (double[] m : manual) sum += m[1] - m[0];
+            return sum;
+        }
+
         boolean startEstimated() {
-            for (double[] e : est) {
+            for (double[] e : unmeasured()) {
                 if (e[0] <= start + 1) return true;
             }
             return false;
         }
 
         boolean endEstimated() {
-            for (double[] e : est) {
+            for (double[] e : unmeasured()) {
                 if (e[1] >= end - 1) return true;
             }
             return false;
         }
+
+        private List<double[]> unmeasured() {
+            List<double[]> all = new ArrayList<>(est);
+            all.addAll(manual);
+            return all;
+        }
+    }
+
+    /** A manual statement about a stretch without data: kind "grid", "outage" or "clear". */
+    public static final class Mark {
+        public final long start, end;
+        public final String kind, by;
+        public final double at;
+
+        public Mark(long start, long end, String kind, double at, String by) {
+            this.start = start;
+            this.end = end;
+            this.kind = kind;
+            this.at = at;
+            this.by = by;
+        }
+    }
+
+    /** Non-overlapping [start, end, GRID|OUTAGE] sorted by time: the newest mark wins, "clear" removes. */
+    public static List<double[]> resolveMarks(List<Mark> marks) {
+        List<Mark> ordered = new ArrayList<>(marks);
+        Collections.sort(ordered, (a, b) -> a.at != b.at ? Double.compare(a.at, b.at)
+                : (!a.by.equals(b.by) ? a.by.compareTo(b.by) : Long.compare(a.start, b.start)));
+        List<double[]> out = new ArrayList<>();
+        for (Mark m : ordered) {
+            List<double[]> kept = new ArrayList<>();
+            for (double[] x : out) {
+                if (x[1] <= m.start || x[0] >= m.end) {
+                    kept.add(x);
+                    continue;
+                }
+                if (x[0] < m.start) kept.add(new double[]{x[0], m.start, x[2]});
+                if (x[1] > m.end) kept.add(new double[]{m.end, x[1], x[2]});
+            }
+            if (!"clear".equals(m.kind)) {
+                kept.add(new double[]{m.start, m.end, "grid".equals(m.kind) ? GRID : OUTAGE});
+            }
+            out = kept;
+        }
+        Collections.sort(out, (a, b) -> Double.compare(a[0], b[0]));
+        return out;
+    }
+
+    /** Give the marked parts of no-data stretches their kind (see power.apply_marks). Between grid() and fillGaps(). */
+    public static List<Seg> applyMarks(List<Seg> segs, List<double[]> marks) {
+        List<Seg> out = new ArrayList<>();
+        for (int i = 0; i < segs.size(); i++) {
+            Seg s = segs.get(i);
+            if (s.kind != NODATA) {
+                out.add(s);
+                continue;
+            }
+            Seg prev = null, nxt = null;
+            for (int j = i - 1; j >= 0 && prev == null; j--) {
+                if (segs.get(j).kind != NODATA) prev = segs.get(j);
+            }
+            for (int j = i + 1; j < segs.size() && nxt == null; j++) {
+                if (segs.get(j).kind != NODATA) nxt = segs.get(j);
+            }
+            double s0 = prev != null ? prev.socEnd : Double.NaN;
+            double s1 = nxt != null ? nxt.socStart : s0;
+            double cursor = s.start;
+            for (double[] m : marks) {
+                double a = Math.max(m[0], s.start), b = Math.min(m[1], s.end);
+                if (b <= a) continue;
+                int kind = (int) m[2];
+                if (a > cursor) out.add(new Seg(cursor, a, NODATA));
+                Seg src = prev != null && prev.kind == kind ? prev : (nxt != null && nxt.kind == kind ? nxt : null);
+                double outW = src != null && src.seconds() > 0 ? src.outKwh * 3.6e6 / src.seconds() : 0;
+                double inW = src != null && src.seconds() > 0 ? src.inKwh * 3.6e6 / src.seconds() : 0;
+                double endLevel = s1;
+                if (kind == OUTAGE && !Double.isNaN(s0) && !Double.isNaN(s1)) endLevel = Math.min(s0, s1);
+                Seg f = new Seg(a, b, kind);
+                f.outKwh = outW * (b - a) / 3.6e6;
+                f.inKwh = inW * (b - a) / 3.6e6;
+                f.socStart = lerp(s.start, s.end, s0, endLevel, a);
+                f.socEnd = lerp(s.start, s.end, s0, endLevel, b);
+                f.manual.add(new double[]{a, b});
+                out.add(f);
+                cursor = b;
+            }
+            if (s.end > cursor) out.add(new Seg(cursor, s.end, NODATA));
+        }
+        return out;
     }
 
     /** Rows sorted by time. Removes samples that replay an old state after a sleep (see power.drop_stale_samples). */
@@ -252,6 +350,7 @@ public final class Segments {
                 last.outKwh += s.outKwh;
                 last.inKwh += s.inKwh;
                 last.est.addAll(s.est);
+                last.manual.addAll(s.manual);
                 if (!Double.isNaN(s.socEnd)) last.socEnd = s.socEnd;
             } else {
                 out.add(s.copy());
@@ -287,18 +386,24 @@ public final class Segments {
             c.inKwh = s.inKwh * f;
             c.socStart = lerp(s.start, s.end, s.socStart, s.socEnd, a);
             c.socEnd = lerp(s.start, s.end, s.socStart, s.socEnd, b);
-            for (double[] e : s.est) {
-                double x = Math.max(e[0], t0), y = Math.min(e[1], t1);
-                if (y > x) c.est.add(new double[]{x, y});
-            }
+            clip(s.est, t0, t1, c.est);
+            clip(s.manual, t0, t1, c.manual);
             out.add(c);
         }
         return out;
     }
 
+    private static void clip(List<double[]> spans, double t0, double t1, List<double[]> into) {
+        for (double[] e : spans) {
+            double x = Math.max(e[0], t0), y = Math.min(e[1], t1);
+            if (y > x) into.add(new double[]{x, y});
+        }
+    }
+
     /** The whole pipeline used by the real-outage graph. */
-    public static List<Seg> real(List<Row> rows, double t0, double t1, double now) {
-        return linkBattery(merge(fillGaps(grid(dropStale(rows), t0, t1, now))));
+    public static List<Seg> real(List<Row> rows, List<Mark> marks, double t0, double t1, double now) {
+        List<Seg> raw = grid(dropStale(rows), t0, t1, now);
+        return linkBattery(merge(fillGaps(applyMarks(raw, resolveMarks(marks)))));
     }
 
     /** One schedule day: 24 letters Y N F S M G H (see schedule.py) as half-hour based segments. */

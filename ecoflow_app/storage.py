@@ -11,6 +11,7 @@ from .power import drop_stale_samples
 KEEP_SECONDS = 8 * 86400
 STALE_CONTEXT = 6 * 3600  # extra history read before a range so a replayed sample can be compared with what came before
 MIN_INTERVAL = 30  # seconds between stored samples
+MARKS_KEEP = 15 * 86400  # manual marks outlive the history they annotate
 
 # Row layout returned by range(): (ts, soc, in_w, out_w, ac_in, ac_out, limit_w, temp, grid, src)
 # src is NULL for samples recorded by this install, otherwise the id of the other device that shared them.
@@ -32,6 +33,9 @@ class History:
         self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self._db.execute("CREATE TABLE IF NOT EXISTS schedule (region TEXT, day INTEGER, grp TEXT, hours TEXT, "
                          "updated TEXT, PRIMARY KEY (region, day, grp))")
+        # manual marks of stretches without data (see power.resolve_marks); own = made on this install
+        self._db.execute("CREATE TABLE IF NOT EXISTS marks (start INTEGER, end INTEGER, kind TEXT, at REAL, by TEXT, "
+                         "own INTEGER, PRIMARY KEY (at, by, start))")
         if "grid" not in cols:  # added with the power-outage feature: 1 mains present, 0 absent, NULL unknown (old rows)
             self._db.execute("ALTER TABLE samples ADD COLUMN grid INTEGER")
         # drop samples built from partial state by an earlier version (limit is never 0 on a real reading)
@@ -94,6 +98,23 @@ class History:
             rows = self._db.execute("SELECT day, hours FROM schedule WHERE region = ? AND grp = ? AND day > ? AND day < ?",
                                     (region, grp, int(t0) - 86400, int(t1))).fetchall()
         return {d: h for d, h in rows}
+
+    # ---- manual marks
+    def add_marks(self, rows: list[tuple], own: bool) -> int:
+        """Rows (start, end, kind, made at, made by). Known ones are skipped; returns how many are new."""
+        with self._lock:
+            before = self._db.total_changes
+            self._db.executemany("INSERT OR IGNORE INTO marks (start, end, kind, at, by, own) VALUES (?,?,?,?,?,?)",
+                                 [(*r, int(own)) for r in rows])
+            added = self._db.total_changes - before
+            self._db.execute("DELETE FROM marks WHERE end < ?", (int(time.time()) - MARKS_KEEP,))
+            self._db.commit()
+        return added
+
+    def marks(self, own_only: bool = False) -> list[tuple]:
+        with self._lock:
+            return self._db.execute("SELECT start, end, kind, at, by FROM marks " +
+                                    ("WHERE own = 1 " if own_only else "") + "ORDER BY at, by, start").fetchall()
 
     # ---- sync helpers (see sync.py)
     def meta_get(self, key: str, default: str | None = None) -> str | None:

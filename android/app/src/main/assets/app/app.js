@@ -172,7 +172,7 @@ function powerArea(chart, secs, caption, value, sub, title, ranges) {
 }
 
 /* ------------------------------------------------------------------ statistics */
-const seg = a => ({start: a[0], end: a[1], kind: a[2], socStart: a[3], socEnd: a[4], out: a[5], est: a[6]});
+const seg = a => ({start: a[0], end: a[1], kind: a[2], socStart: a[3], socEnd: a[4], out: a[5], est: a[6], manual: a[7]});
 const planSeg = a => ({start: a[0], end: a[1], kind: a[2]});
 
 /* A day of the schedule graph; days without a published schedule say why. */
@@ -196,19 +196,20 @@ function renderStats() {
 
   const overlay = $('compare').checked;
   const real = past.slice(-chosen.real).map(d => ({start: d.start, end: d.end, segs: d.real.map(seg), plan: d.plan.map(planSeg)}));
-  let off = 0, estimated = 0, count = 0, planned = 0;
+  let off = 0, estimated = 0, manual = 0, count = 0, planned = 0;
   for (const d of real) {
     let inside = false;
     for (const s of d.segs) {
-      if (s.kind === KIND.OUTAGE) { off += s.end - s.start; estimated += s.est; if (!inside) count++; inside = true; } else inside = false;
+      if (s.kind === KIND.OUTAGE) { off += s.end - s.start; estimated += s.est; manual += s.manual; if (!inside) count++; inside = true; } else inside = false;
     }
     for (const s of d.plan) if (s.kind === KIND.OUTAGE) planned += s.end - s.start;
   }
   $('real-value').textContent = off > 0 ? (estimated > 0 ? '~' : '') + fmtHm(off) : 'None';
   $('real-sub').textContent = [count ? count + (count === 1 ? ' outage' : ' outages') : 'no outages recorded',
-    estimated > 0 ? fmtHm(estimated) + ' estimated' : '', overlay ? 'schedule said ' + fmtHm(planned) : ''].filter(Boolean).join(' · ');
+    estimated > 0 ? fmtHm(estimated) + ' estimated' : '', manual > 0 ? fmtHm(manual) + ' marked by hand' : '', overlay ? 'schedule said ' + fmtHm(planned) : ''].filter(Boolean).join(' · ');
   $('real-legend').innerHTML = '<span><i class="mark box green"></i>Electricity</span><span><i class="mark box hollow"></i>No electricity</span><span><i class="mark box none"></i>No data</span>' +
     (overlay ? '<span><i class="mark box orange-line"></i>Planned outage</span>' : '');
+  charts.real.gaps = model.gaps || [];
   charts.real.set(real, now, overlay);
 
   const todayIdx = days.length - 2;
@@ -252,6 +253,25 @@ function renderStats() {
   charts.soc.set([{name: 'Battery', color: C.green, pts: rows.map(s => [s[0], s[1]])}], now - chosen.soc, now);
 }
 
+/* ------------------------------------------------------------------ marking stretches without data */
+let markZone = null, toastTimer;
+
+function showSheet(zone) {
+  markZone = zone;
+  $('mark-sheet').hidden = !zone;
+  if (!zone) return;
+  const span = zone.end - zone.start;
+  $('mark-title').textContent = 'No data ' + when(zone.start) + '–' + when(zone.end) + ' (' + fmtHm(span) + ')';
+  $('mark-clear').hidden = !zone.marked;
+}
+
+function toast(message) {
+  clearTimeout(toastTimer);
+  $('toast').textContent = message;
+  $('toast').hidden = false;
+  toastTimer = setTimeout(() => { $('toast').hidden = true; }, 6000);
+}
+
 /* ------------------------------------------------------------------ settings: summary once connected, form to edit */
 function renderSettings() {
   if (!model) return;
@@ -269,9 +289,11 @@ function renderSettings() {
   $('acc-status').textContent = account.error ? 'Last reading failed: ' + account.error : (fresh() ? 'Connected - live' : 'Connected');
   $('repo-line').textContent = repo.repo;
   $('repo-status').textContent = busy.sync ? 'Syncing…' : repo.error ? 'Last sync failed: ' + repo.error
+    : repo.marksError ? 'Your marks were not sent: ' + repo.marksError
     : [repo.syncedAt ? 'Last sync ' + when(repo.syncedAt) : 'Connected', repo.samples + ' samples',
        repo.group ? repo.scheduleDays + ' schedule days for group ' + repo.group : 'no outage group synced yet'].join(' · ');
   $('sync-now').disabled = busy.sync;
+  $('auto-update').checked = model.setup.autoUpdate;
 }
 
 /* Fill the form fields only when it opens, so refreshes never overwrite what is being typed. */
@@ -333,8 +355,10 @@ const App = {
     render();
   },
   refreshDone() { busy.sync = false; render(); },
+  marked(error) { toast(error ? 'Saved on this phone, not shared: ' + error : 'Saved and shared'); },
   showTab(name) {
     tab = name;
+    showSheet(null);
     document.querySelectorAll('.tab').forEach(s => { s.hidden = s.id !== 'tab-' + name; });
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
     document.querySelector('main').scrollTop = 0;
@@ -346,6 +370,14 @@ function start() {
   makeCharts();
   document.querySelectorAll('nav button').forEach(b => { b.onclick = () => App.showTab(b.dataset.tab); });
   $('compare').onchange = render;
+  charts.real.onZone = showSheet;
+  $('mark-close').onclick = () => showSheet(null);
+  document.querySelectorAll('[data-mark]').forEach(b => {
+    b.onclick = () => {
+      if (markZone && window.Native) Native.mark(markZone.start, markZone.end, b.dataset.mark);
+      showSheet(null);
+    };
+  });
   document.querySelectorAll('[data-edit]').forEach(b => { b.onclick = () => { editing[b.dataset.edit] = true; openForm(b.dataset.edit); render(); }; });
   document.querySelectorAll('[data-cancel]').forEach(b => { b.onclick = () => { editing[b.dataset.cancel] = false; render(); }; });
   document.querySelectorAll('[data-forget]').forEach(b => {
@@ -381,6 +413,10 @@ function start() {
     document.activeElement.blur();
     render();
     Native.connectRepo($('repo').value, $('token').value);
+  };
+  $('auto-update').onchange = e => {
+    model.setup.autoUpdate = e.target.checked;
+    if (window.Native) Native.setAutoUpdate(e.target.checked);
   };
   $('sync-now').onclick = () => { busy.sync = true; render(); Native.refresh(); };
   let resize;

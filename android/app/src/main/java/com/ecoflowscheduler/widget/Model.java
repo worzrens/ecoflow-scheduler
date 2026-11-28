@@ -50,7 +50,12 @@ final class Model {
         }
         out.put("samples", samples);
 
-        List<Segments.Seg> real = Segments.real(rows, first, Chart.midnight(now, 1), now);
+        List<Segments.Seg> real = Segments.real(rows, data.marks, first, Chart.midnight(now, 1), now);
+        JSONArray gaps = new JSONArray();               // stretches nothing was recorded for: these can be marked
+        for (Segments.Seg s : Segments.grid(rows, first, Chart.midnight(now, 1), now)) {
+            if (s.kind == Segments.NODATA) gaps.put(new JSONArray().put(s.start).put(s.end));
+        }
+        out.put("gaps", gaps);
         JSONArray days = new JSONArray();
         for (int k = 0; k <= DAYS; k++) {                       // the last one is tomorrow (schedule only)
             long d0 = Chart.midnight(now, 1 - DAYS + k), d1 = Chart.midnight(now, 2 - DAYS + k);
@@ -59,7 +64,7 @@ final class Model {
                 double estimated = 0;
                 for (double[] e : s.est) estimated += e[1] - e[0];
                 realJson.put(new JSONArray().put(s.start).put(s.end).put(s.kind).put(num(s.socStart))
-                        .put(num(s.socEnd)).put(num(s.outKwh)).put(estimated));
+                        .put(num(s.socEnd)).put(num(s.outKwh)).put(estimated).put(s.manualSeconds()));
             }
             for (Map.Entry<Long, String> e : data.schedule.entrySet()) {
                 if (e.getKey() + 43200 >= d0 && e.getKey() + 43200 < d1) {
@@ -100,10 +105,11 @@ final class Model {
                 .put("connected", store.configured())
                 .put("repo", store.get("repo", ""))
                 .put("error", store.get("repoError", ""))
+                .put("marksError", store.get("marksError", ""))
                 .put("syncedAt", Long.parseLong(store.get("repoAt", "0")))
                 .put("samples", data.rows.size())
                 .put("scheduleDays", data.schedule.size())
                 .put("group", data.group);
-        return new JSONObject().put("account", account).put("repo", repo);
+        return new JSONObject().put("account", account).put("repo", repo).put("autoUpdate", store.autoUpdate());
     }
 }

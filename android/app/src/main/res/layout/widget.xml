@@ -327,28 +327,61 @@
             android:textColor="#8B93A1"
             android:textSize="12sp" />
 
-        <TextView
+        <ViewFlipper
             android:id="@+id/updated"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:ellipsize="end"
-            android:gravity="end"
-            android:maxLines="1"
-            android:paddingHorizontal="8dp"
-            android:textColor="#8B93A1"
-            android:textSize="11sp" />
+            android:inAnimation="@anim/time_in"
+            android:outAnimation="@anim/time_out"
+            android:paddingHorizontal="8dp">
 
-        <TextView
+            <TextView
+                android:id="@+id/updated_a"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="end"
+                android:maxLines="1"
+                android:textColor="#8B93A1"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/updated_b"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="end"
+                android:maxLines="1"
+                android:textColor="#8B93A1"
+                android:textSize="11sp" />
+        </ViewFlipper>
+
+        <FrameLayout
             android:id="@+id/refresh"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="42dp"
+            android:layout_height="28dp"
             android:background="@drawable/chip"
-            android:contentDescription="Refresh"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="5dp"
-            android:text="&#x21BB;"
-            android:textColor="#F3F4F6"
-            android:textSize="12sp" />
+            android:contentDescription="Refresh">
+
+            <ImageView
+                android:id="@+id/refresh_icon"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:layout_gravity="center"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_refresh" />
+
+            <ProgressBar
+                android:id="@+id/refresh_spin"
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:layout_gravity="center"
+                android:indeterminate="true"
+                android:indeterminateBehavior="repeat"
+                android:indeterminateDrawable="@drawable/spin"
+                android:indeterminateDuration="800"
+                android:visibility="gone" />
+        </FrameLayout>
     </LinearLayout>
 </LinearLayout>

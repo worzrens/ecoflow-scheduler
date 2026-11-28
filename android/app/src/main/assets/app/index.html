@@ -69,6 +69,7 @@
         </div>
         <div class="legend" id="real-legend"></div>
         <canvas id="real-chart" class="timeline"></canvas>
+        <p class="muted small">Tap a gap or an estimated block to say what really happened.</p>
       </article>
 
       <article class="card">
@@ -139,7 +140,7 @@
           </div>
         </div>
         <form id="repo-form" autocomplete="off">
-          <p class="muted small">History and the outage schedule, from the private repository your computers sync to. A read-only token is enough.</p>
+          <p class="muted small">History and the outage schedule, from the private repository your computers sync to. Reading needs Contents: Read-only; to send your own marks the token needs Read and write.</p>
           <label>Repository (owner/name)<input id="repo" type="text" autocapitalize="off" spellcheck="false"></label>
           <label>Token<input id="token" type="password"></label>
           <div class="row gap wrap">
@@ -152,11 +153,24 @@
 
       <article class="card">
         <h2>Widget</h2>
-        <p class="muted small">Add it from your home screen's widget list. It refreshes about every 15 minutes (Android may delay it - exclude the app from battery optimisation if it lags).</p>
+        <p class="muted small">Add it from your home screen's widget list.</p>
+        <label class="check"><input type="checkbox" id="auto-update"> Update every 30 s while the screen is on</label>
+        <p class="muted small">Off: about every 15 minutes. If updates stop, set this app's battery use to Unrestricted.</p>
       </article>
     </div>
   </section>
 </main>
+
+<!-- marking a stretch without data -->
+<aside id="mark-sheet" hidden>
+  <div class="row between gap"><b id="mark-title"></b><button type="button" id="mark-close" aria-label="Close">✕</button></div>
+  <div class="row gap wrap">
+    <button type="button" data-mark="grid">Had electricity</button>
+    <button type="button" data-mark="outage">No electricity</button>
+    <button type="button" data-mark="clear" id="mark-clear">Remove mark</button>
+  </div>
+</aside>
+<div id="toast" hidden></div>
 
 <nav>
   <button data-tab="dashboard" class="on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Dashboard</button>

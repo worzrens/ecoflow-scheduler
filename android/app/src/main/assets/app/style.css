@@ -81,7 +81,7 @@ canvas.timeline.calendar { height: min(560px, 78vh); }
 form { display: flex; flex-direction: column; gap: 10px; }
 form p { margin: 0; }
 label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12.5px; }
-label.check { flex-direction: row; }
+label.check { flex-direction: row; font-size: 13px; }
 input[type=text], input[type=email], input[type=password] {
   font: inherit; font-size: 16px; color: var(--text); background: var(--card2); border: 1px solid #303541; border-radius: 10px; padding: 11px 12px; width: 100%; user-select: text; -webkit-user-select: text;
 }
@@ -91,6 +91,12 @@ input:focus { outline: none; border-color: var(--green); }
 .kv span { overflow-wrap: anywhere; }
 .msg { font-size: 13px; color: var(--muted); min-height: 1em; }
 .msg.bad { color: var(--red); }
+
+#mark-sheet, #toast { position: fixed; left: 8px; right: 8px; bottom: calc(64px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto; background: var(--card2); border: 1px solid #3a3f4a; border-radius: 16px; box-shadow: 0 6px 24px rgba(0,0,0,.6); z-index: 5; }
+#mark-sheet { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+#mark-sheet button[data-mark] { flex: 1; white-space: nowrap; }
+#mark-close { border: 0; padding: 4px 10px; min-height: 32px; color: var(--muted); }
+#toast { padding: 12px 14px; font-size: 13px; }
 
 nav { display: flex; background: var(--card); border-top: 1px solid var(--grid); padding-bottom: env(safe-area-inset-bottom); }
 nav button { flex: 1; border: 0; border-radius: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; min-height: 56px; font-size: 12px; color: var(--muted); }

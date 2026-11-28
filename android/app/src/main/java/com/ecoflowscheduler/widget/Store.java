@@ -2,6 +2,7 @@ package com.ecoflowscheduler.widget;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -10,10 +11,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -58,6 +61,14 @@ final class Store {
 
     void setDayBack(int widgetId, int back, long today) {
         prefs.edit().putInt("dayBack" + widgetId, back).putLong("dayOn" + widgetId, today).apply();
+    }
+
+    boolean autoUpdate() {
+        return prefs.getBoolean("autoUpdate", true);
+    }
+
+    void setAutoUpdate(boolean on) {
+        prefs.edit().putBoolean("autoUpdate", on).apply();
     }
 
     boolean configured() {
@@ -116,7 +127,16 @@ final class Store {
         return new File(ctx.getFilesDir(), "live.jsonl");
     }
 
-    synchronized List<Segments.Row> liveRows() {
+    /** Several threads (app, service, job) share the files, each with its own Store. */
+    private static final Object FILES = new Object();
+
+    List<Segments.Row> liveRows() {
+        synchronized (FILES) {
+            return readLive();
+        }
+    }
+
+    private List<Segments.Row> readLive() {
         List<Segments.Row> rows = new ArrayList<>();
         try {
             if (!liveFile().exists()) return rows;
@@ -140,6 +160,53 @@ final class Store {
         e.apply();
     }
 
+    // ---- manual marks made on this phone (published to the repository when the token allows writing)
+    private File marksFile() {
+        return new File(ctx.getFilesDir(), "marks.json");
+    }
+
+    List<Segments.Mark> ownMarks() {
+        synchronized (FILES) {
+            try {
+                if (!marksFile().exists()) return new ArrayList<>();
+                return Marks.parse(new JSONObject(
+                        new String(Files.readAllBytes(marksFile().toPath()), StandardCharsets.UTF_8)));
+            } catch (IOException | JSONException e) {
+                return new ArrayList<>();
+            }
+        }
+    }
+
+    void addMark(long start, long end, String kind) throws IOException, JSONException {
+        synchronized (FILES) {
+            double at = System.currentTimeMillis() / 1000.0;
+            List<Segments.Mark> kept = new ArrayList<>();
+            for (Segments.Mark m : ownMarks()) {
+                if (m.end >= at - Marks.KEEP_SECONDS) kept.add(m);
+            }
+            kept.add(new Segments.Mark(start, end, kind, at, deviceLabel()));
+            File tmp = new File(ctx.getFilesDir(), "marks.tmp");
+            Files.write(tmp.toPath(), Marks.document(kept).toString().getBytes(StandardCharsets.UTF_8));
+            Files.move(tmp.toPath(), marksFile().toPath(), StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** This phone's folder name in the repository. */
+    String deviceId() {
+        synchronized (FILES) {
+            String id = get("deviceId", "");
+            if (id.isEmpty()) {
+                id = "android-" + UUID.randomUUID().toString().substring(0, 8);
+                put("deviceId", id);
+            }
+            return id;
+        }
+    }
+
+    String deviceLabel() {
+        return "Phone (" + Build.MODEL + ")";
+    }
+
     /** Drop the downloaded repository files (on disconnect). */
     void clearRepoCache() {
         File[] files = blobDir().listFiles();
@@ -150,7 +217,13 @@ final class Store {
         }
     }
 
-    synchronized void addLive(Segments.Row r) throws IOException, JSONException {
+    void addLive(Segments.Row r) throws IOException, JSONException {
+        synchronized (FILES) {
+            writeLive(r);
+        }
+    }
+
+    private void writeLive(Segments.Row r) throws IOException, JSONException {
         long cutoff = r.ts - 8 * 86400L;
         List<String> lines = new ArrayList<>();
         List<Segments.Row> rows = liveRows();

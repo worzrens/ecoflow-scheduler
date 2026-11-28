@@ -172,8 +172,16 @@ Syncing (folder or GitHub) also carries each install's `settings.json` and `sche
   the Control tab shows which device it came from. On the first run the install that saved its rules most recently wins.
 - the fetched outage schedule, so a device whose own fetch is blocked still gets it from another one.
 
+- manual marks of stretches without data (`marks.json`), see below.
+
 No passwords or tokens are ever written to the store. A change is synced a few seconds after you make it; other
 devices pick it up at their next sync (5 minutes for a folder, 30 minutes for GitHub).
+
+### Marking stretches without data
+Where nothing was recorded the graphs guess. You can say what really happened: on a computer click a grey or estimated
+block in *Time without electricity*; on Android tap it in *Statistics*. Choose **electricity** or **no electricity**
+(or remove the mark). Recorded data always wins over a mark, between overlapping marks the newest wins, and marked time
+is listed as "marked by hand". Marks are synced like everything else.
 
 ### When DTEK blocks the automatic fetch
 Settings > Outage schedule can take the schedule from your own browser (the app listens on `127.0.0.1:47321` only):
@@ -198,13 +206,16 @@ The app does not reload the page or pass the site's security check for you.
   *Statistics* (real and planned outages, power and battery graphs - tap or drag on a graph for details) and
   *Settings*. It only monitors; rules are changed on a computer. While open it reads the unit every few seconds.
 - **Set up:** in *Settings* connect the EcoFlow account (with the serial number), then the data repository with a
-  fine-grained token for it (**Contents: Read-only**). Each connection is checked before it is saved. Then add the
-  widget. Secrets are encrypted with the Android keystore.
+  fine-grained token for it (**Contents: Read and write** to share the marks you make on the phone; Read-only is
+  enough otherwise). Each connection is checked before it is saved. Then add the widget. Secrets are encrypted with
+  the Android keystore. The phone writes only its own folder (`marks.json`, `peer.json`).
 - The screens are a bundled page (`android/app/src/main/assets/app`) drawn from `Model.java`'s data; it loads
   nothing from the network.
-- **Freshness:** every 15 minutes at best (Android may delay it; exclude the app from battery optimisation if it
-  lags). Live values come straight from EcoFlow; history and schedule from the repository (the PC syncs every 30 min).
-  The phone's own readings stay on the phone and cover times when no PC was recording.
+- **Freshness:** while the screen is on the widget updates every 30 seconds (repository every 5 minutes) through a
+  foreground service; Android cannot tell an app that its widget is in view. With the screen off, or the switch in
+  *Settings* off, it is every 15 minutes at best. If updates stop, set the app's battery use to Unrestricted.
+  Live values come straight from EcoFlow; history and schedule from the repository (the PC syncs every 30 min).
+  The ↻ button spins while it refreshes and a new time slides in. The phone's own readings stay on the phone and cover times when no PC was recording.
 - **Updating without reinstalling** needs a stable signing key, otherwise each build has a new one and Android
   requires uninstalling first. Create it once and keep the file private:
   `keytool -genkeypair -keystore release.jks -alias ecoflow -keyalg RSA -keysize 2048 -validity 10000`
