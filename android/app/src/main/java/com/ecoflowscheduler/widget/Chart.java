@@ -56,7 +56,7 @@ final class Chart {
         Model m = new Model();
         // gaps are estimated from their neighbours, so always look at the same days as the app: otherwise a gap that
         // starts before the first shown day has nothing to be estimated from and shows as "no data" only here
-        long context = midnight(now, 1 - Math.max(n, Model.DAYS));
+        long context = midnight(now, 1 - Math.max(n, com.ecoflowscheduler.widget.Model.DAYS));   // not Chart.Model
         List<Segments.Seg> real = Segments.real(data.rows, data.marks, context, midnight(now, 1), now);
         for (int k = 0; k <= n; k++) {
             Day d = new Day();
